@@ -2,3 +2,4 @@ streamlit
 pdfplumber
 anthropic
 openpyxl
+PyMuPDF
