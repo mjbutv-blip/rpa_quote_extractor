@@ -1,0 +1,87 @@
+import streamlit as st
+import os
+import tempfile
+from extractor_engine import extract_text_from_pdf, call_claude_to_extract, extract_image_from_pdf
+from excel_writer import write_to_template
+
+st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
+
+st.title("📂 服装工艺单 PDF 自动化提取与 RPA 填表系统")
+st.write("上传多款产品的工艺单 PDF，AI 将自动提取核心字段并无损填入报价单总表模板中。")
+
+api_key = st.sidebar.text_input(
+    "输入 Anthropic API Key",
+    type="password",
+    value=os.environ.get("ANTHROPIC_API_KEY", ""),
+)
+
+uploaded_files = st.file_uploader(
+    "选择工艺单 PDF 文件 (可多选)", type=["pdf"], accept_multiple_files=True
+)
+template_path = "templates/报价单总表模板.xlsx"
+
+if st.button("🚀 开始批量提取并生成报价单"):
+    if not api_key:
+        st.error("请先在左侧输入您的 Anthropic API Key！")
+    elif not uploaded_files:
+        st.warning("请至少上传一个 PDF 文件！")
+    elif not os.path.exists(template_path):
+        st.error(f"未找到模板文件：{template_path}，请将「报价单总表模板.xlsx」放入 templates/ 目录。")
+    else:
+        extracted_results = []
+        image_tmp_files = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for idx, uploaded_file in enumerate(uploaded_files):
+            status_text.text(f"正在处理 ({idx+1}/{len(uploaded_files)}): {uploaded_file.name}...")
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded_file.getvalue())
+                tmp_pdf_path = tmp.name
+
+            try:
+                pdf_text = extract_text_from_pdf(tmp_pdf_path)
+                data = call_claude_to_extract(pdf_text, api_key)
+
+                image_path = extract_image_from_pdf(tmp_pdf_path)
+                data["image_path"] = image_path
+                if image_path:
+                    image_tmp_files.append(image_path)
+
+                extracted_results.append(data)
+                has_img = "含款式图 🖼️" if image_path else "无款式图"
+                st.success(f"✅ {uploaded_file.name} 提取成功！（{has_img}）")
+            except Exception as e:
+                st.error(f"❌ {uploaded_file.name} 提取失败: {str(e)}")
+            finally:
+                if os.path.exists(tmp_pdf_path):
+                    os.remove(tmp_pdf_path)
+
+            progress_bar.progress((idx + 1) / len(uploaded_files))
+
+        status_text.text("所有 PDF 提取完毕！正在写入 Excel...")
+
+        if extracted_results:
+            output_path = "templates/生成的报价总表_output.xlsx"
+            try:
+                write_to_template(extracted_results, template_path, output_path)
+                st.balloons()
+                st.success("🎉 报价总表生成成功！")
+
+                with open(output_path, "rb") as f:
+                    st.download_button(
+                        label="📥 点击下载最新生成的报价单总表.xlsx",
+                        data=f,
+                        file_name="生成的报价单总表.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+            except Exception as e:
+                st.error(f"写入 Excel 时发生错误: {str(e)}")
+            finally:
+                for img_path in image_tmp_files:
+                    try:
+                        if os.path.exists(img_path):
+                            os.remove(img_path)
+                    except OSError:
+                        pass
