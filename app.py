@@ -7,6 +7,8 @@ from extractor_engine import (
     call_claude_to_extract,
     extract_image_base64,
     extract_image_from_pdf,
+    extract_images_from_excel,
+    extract_style_image_from_excel,
     extract_text_from_excel,
     extract_text_from_pdf,
 )
@@ -47,28 +49,27 @@ if st.button("🚀 开始批量提取并生成报价单"):
             status_text.text(f"正在处理 ({idx+1}/{len(uploaded_files)}): {uploaded_file.name}...")
             file_ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
             is_pdf = file_ext == "pdf"
-            suffix = f".{file_ext}"
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as tmp:
                 tmp.write(uploaded_file.getvalue())
                 tmp_file_path = tmp.name
 
             try:
                 if is_pdf:
-                    pdf_text = extract_text_from_pdf(tmp_file_path)
+                    # PDF：提取文本 + 单张最大图（多模态）
+                    text = extract_text_from_pdf(tmp_file_path)
                     img_result = extract_image_base64(tmp_file_path)
-                    image_base64 = img_result[0] if img_result else None
-                    img_media_type = img_result[1] if img_result else "image/jpeg"
-                    data = call_claude_to_extract(
-                        pdf_text, api_key,
-                        image_base64=image_base64,
-                        media_type=img_media_type,
-                    )
+                    images = [img_result] if img_result else None
+                    data = call_claude_to_extract(text, api_key, images=images)
                     image_path = extract_image_from_pdf(tmp_file_path)
                 else:
-                    excel_text = extract_text_from_excel(tmp_file_path)
-                    data = call_claude_to_extract(excel_text, api_key)
-                    image_path = None
+                    # Excel：提取文本 + 所有嵌入图片（多模态）
+                    text = extract_text_from_excel(tmp_file_path)
+                    excel_images = extract_images_from_excel(tmp_file_path)
+                    images = excel_images if excel_images else None
+                    data = call_claude_to_extract(text, api_key, images=images)
+                    # 取面积最大的图作为输出模板中的款式图
+                    image_path = extract_style_image_from_excel(tmp_file_path)
 
                 data["image_path"] = image_path
                 if image_path:
@@ -76,8 +77,10 @@ if st.button("🚀 开始批量提取并生成报价单"):
 
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
-                has_img = "含款式图 🖼️" if image_path else "无款式图"
-                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！（{has_img}）")
+                img_count = len(images) if images else 0
+                img_note = f"含 {img_count} 张图片 🖼️" if img_count else "无图片"
+                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！（{img_note}）")
+
             except Exception as e:
                 st.error(f"❌ {uploaded_file.name} 提取失败: {str(e)}")
             finally:
