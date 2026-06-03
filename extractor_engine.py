@@ -184,10 +184,12 @@ def extract_style_image_from_excel(excel_path: str):
 
 
 def crop_garment_region(image_path: str, api_key: str) -> str:
-    """用 Claude Vision 识别服装款式草图区域（百分比坐标）并裁剪。
+    """用 Claude Vision 裁剪出服装款式草图区域，去掉下方做工说明表格。
 
-    使用百分比而非像素坐标：Claude 对比例判断远比像素定位准确。
-    失败时原样返回原图路径，不影响主流程。
+    分两步：
+    1. 让 Claude 找「做工表格从哪里开始」（只问一个数字，比四边更准确）
+    2. 再让 Claude 给出款式图的左右边界（去掉两侧空白）
+    失败时原样返回原图路径。
     """
     if not _PIL_AVAILABLE or not image_path or not os.path.exists(image_path):
         return image_path
@@ -198,14 +200,16 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
         img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
         img_w, img_h = img.size
 
-        ext = image_path.rsplit(".", 1)[-1].lower()
+        ext  = image_path.rsplit(".", 1)[-1].lower()
         mime = _ext_to_mime(ext) or "image/png"
-        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        b64  = base64.b64encode(img_bytes).decode("utf-8")
 
         client = Anthropic(api_key=api_key)
-        response = client.messages.create(
+
+        # ── 步骤1：找做工说明表格的起始位置（垂直分界线）──────────
+        r1 = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=150,
+            max_tokens=120,
             messages=[{
                 "role": "user",
                 "content": [
@@ -213,41 +217,62 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
                     {
                         "type": "text",
                         "text": (
-                            "This is an apparel tech pack image. "
-                            "Find the garment sketch or fashion illustration "
-                            "(clothing line drawing, fashion sketch, or garment photo). "
-                            "Express its location as percentages of the full image dimensions.\n"
-                            "Return ONLY this JSON:\n"
-                            "{\"left\": <0-100>, \"top\": <0-100>, \"right\": <0-100>, \"bottom\": <0-100>}\n"
-                            "- left/top = top-left corner of the garment sketch (% from left / % from top)\n"
-                            "- right/bottom = bottom-right corner (% from left / % from top)\n"
-                            "Exclude from the region: text paragraphs, fabric/color swatches, "
-                            "measurement tables, logos, barcodes. "
-                            "JSON only, no explanation."
+                            "This is an apparel tech pack. It has a garment sketch in the UPPER part "
+                            "and specification tables (FABRIC / SIZE / PRINT / OBSERVATIONS or similar labels) "
+                            "in the LOWER part.\n\n"
+                            "At what percentage from the TOP of the image do the specification tables begin? "
+                            "(0% = very top, 100% = very bottom)\n\n"
+                            "If there are no tables, answer 95.\n"
+                            "Return ONLY a JSON: {\"table_start_pct\": <number>}"
                         ),
                     },
                 ],
             }],
         )
+        raw1 = r1.content[0].text.strip()
+        if "```" in raw1:
+            raw1 = raw1.split("```")[1].split("```")[0].strip()
+            if raw1.startswith("json"):
+                raw1 = raw1[4:].strip()
+        table_start = float(json.loads(raw1)["table_start_pct"])
+        # 保守处理：稍微上移 2%，确保不带进表格顶部的边框线
+        sketch_bottom = max(5.0, min(95.0, table_start - 2.0))
 
-        raw = response.content[0].text.strip()
-        if "```" in raw:
-            raw = raw.split("```")[1].split("```")[0].strip()
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
+        # ── 步骤2：找款式图左右边界（水平居中裁剪）──────────────────
+        r2 = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=120,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Focus ONLY on the upper {sketch_bottom:.0f}% of this image (the garment sketch area). "
+                            "What are the leftmost and rightmost extents of the garment drawing itself "
+                            "(ignore blank white margins)?\n"
+                            "Return ONLY JSON: {\"left_pct\": <0-100>, \"right_pct\": <0-100>}"
+                        ),
+                    },
+                ],
+            }],
+        )
+        raw2 = r2.content[0].text.strip()
+        if "```" in raw2:
+            raw2 = raw2.split("```")[1].split("```")[0].strip()
+            if raw2.startswith("json"):
+                raw2 = raw2[4:].strip()
+        lr = json.loads(raw2)
+        left_pct  = max(0.0,   float(lr["left_pct"])  - 2.0)
+        right_pct = min(100.0, float(lr["right_pct"]) + 2.0)
 
-        coords = json.loads(raw)
-        # 百分比 → 像素，加 1% 安全边距防止过度裁剪
-        MARGIN = 1.0
-        left   = max(0.0, float(coords["left"])   - MARGIN) / 100
-        top    = max(0.0, float(coords["top"])    - MARGIN) / 100
-        right  = min(100.0, float(coords["right"]) + MARGIN) / 100
-        bottom = min(100.0, float(coords["bottom"])+ MARGIN) / 100
+        # ── 裁剪 ────────────────────────────────────────────────────
+        x0 = int(left_pct        / 100 * img_w)
+        y0 = 0
+        x1 = int(right_pct       / 100 * img_w)
+        y1 = int(sketch_bottom   / 100 * img_h)
 
-        x0, y0 = int(left  * img_w), int(top    * img_h)
-        x1, y1 = int(right * img_w), int(bottom * img_h)
-
-        # 最小有效尺寸保护
         if (x1 - x0) < 20 or (y1 - y0) < 20:
             return image_path
 
@@ -258,7 +283,7 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
         return tmp_path
 
     except Exception:
-        return image_path  # 识别失败时返回原图，不影响主流程
+        return image_path
 
 
 # ── Claude 提取 ───────────────────────────────────────────────────────────────
