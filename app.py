@@ -1,13 +1,21 @@
-import streamlit as st
 import os
 import tempfile
-from extractor_engine import extract_text_from_pdf, call_claude_to_extract, extract_image_from_pdf, extract_image_base64
+
+import streamlit as st
+
+from extractor_engine import (
+    call_claude_to_extract,
+    extract_image_base64,
+    extract_image_from_pdf,
+    extract_text_from_excel,
+    extract_text_from_pdf,
+)
 from excel_writer import write_to_template
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
 
-st.title("📂 服装工艺单 PDF 自动化提取与 RPA 填表系统")
-st.write("上传多款产品的工艺单 PDF，AI 将自动提取核心字段并无损填入报价单总表模板中。")
+st.title("📂 服装工艺单 PDF / Excel 自动化提取与 RPA 填表系统")
+st.write("上传多款产品的工艺单（PDF 或 Excel），AI 将自动提取核心字段并填入报价单总表模板中。")
 
 api_key = st.sidebar.text_input(
     "输入 Anthropic API Key",
@@ -16,7 +24,9 @@ api_key = st.sidebar.text_input(
 )
 
 uploaded_files = st.file_uploader(
-    "选择工艺单 PDF 文件 (可多选)", type=["pdf"], accept_multiple_files=True
+    "选择工艺单文件 (可多选，支持 PDF / Excel)",
+    type=["pdf", "xlsx", "xls"],
+    accept_multiple_files=True,
 )
 template_path = "templates/报价单总表模板.xlsx"
 
@@ -24,7 +34,7 @@ if st.button("🚀 开始批量提取并生成报价单"):
     if not api_key:
         st.error("请先在左侧输入您的 Anthropic API Key！")
     elif not uploaded_files:
-        st.warning("请至少上传一个 PDF 文件！")
+        st.warning("请至少上传一个文件！")
     elif not os.path.exists(template_path):
         st.error(f"未找到模板文件：{template_path}，请将「报价单总表模板.xlsx」放入 templates/ 目录。")
     else:
@@ -35,42 +45,48 @@ if st.button("🚀 开始批量提取并生成报价单"):
 
         for idx, uploaded_file in enumerate(uploaded_files):
             status_text.text(f"正在处理 ({idx+1}/{len(uploaded_files)}): {uploaded_file.name}...")
+            file_ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+            is_pdf = file_ext == "pdf"
+            suffix = f".{file_ext}"
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(uploaded_file.getvalue())
-                tmp_pdf_path = tmp.name
+                tmp_file_path = tmp.name
 
             try:
-                pdf_text = extract_text_from_pdf(tmp_pdf_path)
+                if is_pdf:
+                    pdf_text = extract_text_from_pdf(tmp_file_path)
+                    img_result = extract_image_base64(tmp_file_path)
+                    image_base64 = img_result[0] if img_result else None
+                    img_media_type = img_result[1] if img_result else "image/jpeg"
+                    data = call_claude_to_extract(
+                        pdf_text, api_key,
+                        image_base64=image_base64,
+                        media_type=img_media_type,
+                    )
+                    image_path = extract_image_from_pdf(tmp_file_path)
+                else:
+                    excel_text = extract_text_from_excel(tmp_file_path)
+                    data = call_claude_to_extract(excel_text, api_key)
+                    image_path = None
 
-                # 提取图片用于 Claude 视觉识别（尺码表 + 品名校验）
-                img_result = extract_image_base64(tmp_pdf_path)
-                image_base64 = img_result[0] if img_result else None
-                img_media_type = img_result[1] if img_result else "image/jpeg"
-
-                data = call_claude_to_extract(
-                    pdf_text, api_key,
-                    image_base64=image_base64,
-                    media_type=img_media_type,
-                )
-
-                image_path = extract_image_from_pdf(tmp_pdf_path)
                 data["image_path"] = image_path
                 if image_path:
                     image_tmp_files.append(image_path)
 
                 extracted_results.append(data)
+                file_type_label = "PDF" if is_pdf else "Excel"
                 has_img = "含款式图 🖼️" if image_path else "无款式图"
-                st.success(f"✅ {uploaded_file.name} 提取成功！（{has_img}）")
+                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！（{has_img}）")
             except Exception as e:
                 st.error(f"❌ {uploaded_file.name} 提取失败: {str(e)}")
             finally:
-                if os.path.exists(tmp_pdf_path):
-                    os.remove(tmp_pdf_path)
+                if os.path.exists(tmp_file_path):
+                    os.remove(tmp_file_path)
 
             progress_bar.progress((idx + 1) / len(uploaded_files))
 
-        status_text.text("所有 PDF 提取完毕！正在写入 Excel...")
+        status_text.text("所有文件提取完毕！正在写入 Excel...")
 
         if extracted_results:
             output_path = "templates/生成的报价总表_output.xlsx"

@@ -3,15 +3,26 @@ import json
 import os
 import tempfile
 
-import fitz  # PyMuPDF
-import pdfplumber
+import openpyxl
 from anthropic import Anthropic
+
+try:
+    import fitz  # PyMuPDF
+    _FITZ_AVAILABLE = True
+except ImportError:
+    _FITZ_AVAILABLE = False
+
+try:
+    import pdfplumber
+    _PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    _PDFPLUMBER_AVAILABLE = False
 
 # MIME types supported by the Anthropic vision API
 _SUPPORTED_EXTS = {"jpeg", "jpg", "png", "gif", "webp"}
 
 
-def _ext_to_mime(ext: str) -> str | None:
+def _ext_to_mime(ext: str):
     ext = ext.lower().lstrip(".")
     if ext == "jpg":
         return "image/jpeg"
@@ -20,7 +31,9 @@ def _ext_to_mime(ext: str) -> str | None:
     return None
 
 
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_pdf(pdf_path: str) -> str:
+    if not _PDFPLUMBER_AVAILABLE:
+        raise RuntimeError("pdfplumber 未安装，无法处理 PDF 文件。")
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
@@ -30,8 +43,25 @@ def extract_text_from_pdf(pdf_path):
     return text
 
 
-def extract_image_from_pdf(pdf_path):
+def extract_text_from_excel(excel_path: str) -> str:
+    """将 Excel 工艺单所有 sheet 的单元格内容转为纯文本，供 Claude 提取字段。"""
+    wb = openpyxl.load_workbook(excel_path, data_only=True)
+    lines = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        lines.append(f"=== Sheet: {sheet_name} ===")
+        for row in ws.iter_rows(values_only=True):
+            row_vals = [str(c) if c is not None else "" for c in row]
+            row_text = "\t".join(row_vals)
+            if row_text.strip():
+                lines.append(row_text)
+    return "\n".join(lines)
+
+
+def extract_image_from_pdf(pdf_path: str):
     """提取 PDF 第一页中面积最大的图片，保存为临时 PNG，返回绝对路径。无图片则返回 None。"""
+    if not _FITZ_AVAILABLE:
+        return None
     try:
         doc = fitz.open(pdf_path)
         page = doc[0]
@@ -58,10 +88,10 @@ def extract_image_from_pdf(pdf_path):
         return None
 
 
-def extract_image_base64(pdf_path, max_pages: int = 3) -> tuple[str, str] | None:
-    """扫描前 max_pages 页，找出面积最大的图片，返回 (base64_str, media_type)。
-    如果没有找到可用图片（含格式不支持的情况），返回 None。
-    """
+def extract_image_base64(pdf_path: str, max_pages: int = 3):
+    """扫描前 max_pages 页，找出面积最大的图片，返回 (base64_str, media_type) 或 None。"""
+    if not _FITZ_AVAILABLE:
+        return None
     try:
         doc = fitz.open(pdf_path)
         scan_pages = min(max_pages, len(doc))
@@ -70,7 +100,7 @@ def extract_image_base64(pdf_path, max_pages: int = 3) -> tuple[str, str] | None
         best_xref = None
         for pn in range(scan_pages):
             for img in doc[pn].get_images(full=True):
-                area = img[2] * img[3]  # width * height
+                area = img[2] * img[3]
                 if area > best_area:
                     best_area = area
                     best_xref = img[0]
@@ -96,14 +126,10 @@ def extract_image_base64(pdf_path, max_pages: int = 3) -> tuple[str, str] | None
 def call_claude_to_extract(
     text: str,
     api_key: str,
-    image_base64: str | None = None,
+    image_base64: str = None,
     media_type: str = "image/jpeg",
 ) -> dict:
-    """调用 Claude 从工艺单文本（+ 可选款式图）中提取结构化字段。
-
-    当 image_base64 不为 None 时，将图片以多模态方式传入，
-    让模型以图片为准对品名进行视觉交叉校验。
-    """
+    """调用 Claude 从工艺单文本（+ 可选款式图）中提取结构化字段。"""
     client = Anthropic(api_key=api_key)
 
     system_prompt = (
@@ -136,7 +162,6 @@ def call_claude_to_extract(
         "Do not include markdown formatting like ```json or any conversational text."
     )
 
-    # 构造多模态 user content
     user_content = []
     if image_base64:
         user_content.append({
