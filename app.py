@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import tempfile
-from extractor_engine import extract_text_from_pdf, call_claude_to_extract, extract_image_from_pdf
+from extractor_engine import extract_text_from_pdf, call_claude_to_extract, extract_image_from_pdf, extract_image_base64
 from excel_writer import write_to_template
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
@@ -42,7 +42,17 @@ if st.button("🚀 开始批量提取并生成报价单"):
 
             try:
                 pdf_text = extract_text_from_pdf(tmp_pdf_path)
-                data = call_claude_to_extract(pdf_text, api_key)
+
+                # 提取图片用于 Claude 视觉识别（尺码表 + 品名校验）
+                img_result = extract_image_base64(tmp_pdf_path)
+                image_base64 = img_result[0] if img_result else None
+                img_media_type = img_result[1] if img_result else "image/jpeg"
+
+                data = call_claude_to_extract(
+                    pdf_text, api_key,
+                    image_base64=image_base64,
+                    media_type=img_media_type,
+                )
 
                 image_path = extract_image_from_pdf(tmp_pdf_path)
                 data["image_path"] = image_path
