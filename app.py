@@ -72,11 +72,11 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     # 取面积最大的图作为输出模板中的款式图
                     image_path = extract_style_image_from_excel(tmp_file_path)
 
-                # 裁剪款式图：只保留服装草图区域，去掉面料/颜色等其他信息
-                if image_path:
+                # PDF 才需要裁剪（PDF 提取的是整页合图，需要定位款式草图区域）
+                # Excel 的图片在 xl/media/ 中已单独存储，直接使用，无需裁剪
+                if is_pdf and image_path:
                     cropped_path = crop_garment_region(image_path, api_key)
                     if cropped_path != image_path:
-                        # 裁剪成功，删除原始全图临时文件
                         try:
                             os.remove(image_path)
                         except OSError:
