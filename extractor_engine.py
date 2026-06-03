@@ -183,103 +183,92 @@ def extract_style_image_from_excel(excel_path: str):
     return None
 
 
-def crop_garment_region(image_path: str, api_key: str) -> str:
-    """用 Claude Vision 裁剪出服装款式草图区域，去掉下方做工说明表格。
+def crop_garment_region(image_path: str, api_key: str = None) -> str:
+    """用 OpenCV 检测做工说明表格边界，裁剪出服装款式草图区域。
 
-    分两步：
-    1. 让 Claude 找「做工表格从哪里开始」（只问一个数字，比四边更准确）
-    2. 再让 Claude 给出款式图的左右边界（去掉两侧空白）
+    完全基于图像处理，不调用 Claude API：
+    1. 形态学水平线检测 → 找表格上边界
+    2. 行密度分析兜底 → 找高密度文字区域起点
+    3. 列投影 → 找款式图左右边界，去掉空白边距
     失败时原样返回原图路径。
     """
-    if not _PIL_AVAILABLE or not image_path or not os.path.exists(image_path):
+    if not image_path or not os.path.exists(image_path):
         return image_path
     try:
-        with open(image_path, "rb") as f:
-            img_bytes = f.read()
+        import cv2
+        import numpy as np
 
-        img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
-        img_w, img_h = img.size
-
-        ext  = image_path.rsplit(".", 1)[-1].lower()
-        mime = _ext_to_mime(ext) or "image/png"
-        b64  = base64.b64encode(img_bytes).decode("utf-8")
-
-        client = Anthropic(api_key=api_key)
-
-        # ── 步骤1：找做工说明表格的起始位置（垂直分界线）──────────
-        r1 = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=120,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
-                    {
-                        "type": "text",
-                        "text": (
-                            "This is an apparel tech pack. It has a garment sketch in the UPPER part "
-                            "and specification tables (FABRIC / SIZE / PRINT / OBSERVATIONS or similar labels) "
-                            "in the LOWER part.\n\n"
-                            "At what percentage from the TOP of the image do the specification tables begin? "
-                            "(0% = very top, 100% = very bottom)\n\n"
-                            "If there are no tables, answer 95.\n"
-                            "Return ONLY a JSON: {\"table_start_pct\": <number>}"
-                        ),
-                    },
-                ],
-            }],
-        )
-        raw1 = r1.content[0].text.strip()
-        if "```" in raw1:
-            raw1 = raw1.split("```")[1].split("```")[0].strip()
-            if raw1.startswith("json"):
-                raw1 = raw1[4:].strip()
-        table_start = float(json.loads(raw1)["table_start_pct"])
-        # 保守处理：稍微上移 2%，确保不带进表格顶部的边框线
-        sketch_bottom = max(5.0, min(95.0, table_start - 2.0))
-
-        # ── 步骤2：找款式图左右边界（水平居中裁剪）──────────────────
-        r2 = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=120,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Focus ONLY on the upper {sketch_bottom:.0f}% of this image (the garment sketch area). "
-                            "What are the leftmost and rightmost extents of the garment drawing itself "
-                            "(ignore blank white margins)?\n"
-                            "Return ONLY JSON: {\"left_pct\": <0-100>, \"right_pct\": <0-100>}"
-                        ),
-                    },
-                ],
-            }],
-        )
-        raw2 = r2.content[0].text.strip()
-        if "```" in raw2:
-            raw2 = raw2.split("```")[1].split("```")[0].strip()
-            if raw2.startswith("json"):
-                raw2 = raw2[4:].strip()
-        lr = json.loads(raw2)
-        left_pct  = max(0.0,   float(lr["left_pct"])  - 2.0)
-        right_pct = min(100.0, float(lr["right_pct"]) + 2.0)
-
-        # ── 裁剪 ────────────────────────────────────────────────────
-        x0 = int(left_pct        / 100 * img_w)
-        y0 = 0
-        x1 = int(right_pct       / 100 * img_w)
-        y1 = int(sketch_bottom   / 100 * img_h)
-
-        if (x1 - x0) < 20 or (y1 - y0) < 20:
+        img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+        if img is None:
             return image_path
 
-        cropped = img.crop((x0, y0, x1, y1))
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # ── 步骤1：形态学水平线检测（找表格边框线）─────────────────
+        # 二值化：深色像素（文字/线条）变为白色
+        _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+
+        # 水平线核：宽度至少占图片宽度的 1/4
+        min_line_w = max(10, w // 4)
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (min_line_w, 1))
+        h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
+
+        # 在跳过顶部 30% 后，寻找第一条横跨全宽的线
+        skip_y = int(h * 0.30)
+        table_top_y = h  # 默认：无表格，不裁底部
+        line_rows = np.where(np.any(h_lines[skip_y:], axis=1))[0]
+        if len(line_rows) > 0:
+            table_top_y = int(line_rows[0]) + skip_y
+
+        # ── 步骤2：行密度分析兜底（处理无明显边框线的情况）─────────
+        if table_top_y == h:
+            row_density = np.sum(binary, axis=1).astype(float) / (w * 255)
+
+            # 平滑后寻找高密度文字区（连续多行密度 > 阈值）
+            win = max(3, h // 40)
+            kernel_1d = np.ones(win) / win
+            density_smooth = np.convolve(row_density, kernel_1d, mode='same')
+
+            TEXT_THRESH = 0.10   # 行内超过 10% 像素为深色即判为文字行
+            CONSEC_ROWS = 4      # 连续 N 行均满足才确认为表格区域
+
+            count = 0
+            for y in range(skip_y, h):
+                if density_smooth[y] > TEXT_THRESH:
+                    count += 1
+                    if count >= CONSEC_ROWS:
+                        table_top_y = y - CONSEC_ROWS + 1
+                        break
+                else:
+                    count = 0
+
+        # 如果分界线在图片底部 10% 以下，视为无表格，保留完整图片
+        if table_top_y > int(h * 0.90):
+            table_top_y = h
+
+        # 留 4px 安全边距，避免把表格首行边框也带进去
+        sketch_h = max(20, table_top_y - 4)
+
+        # ── 步骤3：列投影找款式图左右边界（去空白边距）─────────────
+        sketch_zone = binary[:sketch_h, :]
+        col_sums = np.sum(sketch_zone, axis=0)
+        content_cols = np.where(col_sums > 0)[0]
+
+        if len(content_cols) > 0:
+            left  = max(0, int(content_cols[0])  - 8)
+            right = min(w, int(content_cols[-1]) + 8)
+        else:
+            left, right = 0, w
+
+        # ── 裁剪并保存 ───────────────────────────────────────────────
+        cropped = img[:sketch_h, left:right]
+        if cropped.shape[0] < 20 or cropped.shape[1] < 20:
+            return image_path
+
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
         os.close(tmp_fd)
-        cropped.save(tmp_path, format="PNG")
+        cv2.imwrite(tmp_path, cropped)
         return tmp_path
 
     except Exception:

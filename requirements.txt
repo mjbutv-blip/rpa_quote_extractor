@@ -1,5 +1,10 @@
-streamlit
-pdfplumber
-anthropic
-openpyxl
-PyMuPDF
+streamlit>=1.35.0
+anthropic>=0.28.0
+pdfplumber>=0.11.0
+PyMuPDF>=1.24.0
+Pillow>=10.0.0
+openpyxl>=3.1.2
+xlrd>=2.0.1
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
