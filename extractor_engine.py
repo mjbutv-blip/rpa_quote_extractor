@@ -184,8 +184,10 @@ def extract_style_image_from_excel(excel_path: str):
 
 
 def crop_garment_region(image_path: str, api_key: str) -> str:
-    """用 Claude Vision 识别图中的服装款式草图区域并裁剪，返回裁剪后的临时 PNG 路径。
-    若图片无法裁剪或识别失败，则原路径原样返回。
+    """用 Claude Vision 识别服装款式草图区域（百分比坐标）并裁剪。
+
+    使用百分比而非像素坐标：Claude 对比例判断远比像素定位准确。
+    失败时原样返回原图路径，不影响主流程。
     """
     if not _PIL_AVAILABLE or not image_path or not os.path.exists(image_path):
         return image_path
@@ -202,8 +204,8 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
 
         client = Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=120,
+            model="claude-sonnet-4-6",
+            max_tokens=150,
             messages=[{
                 "role": "user",
                 "content": [
@@ -211,12 +213,17 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
                     {
                         "type": "text",
                         "text": (
-                            f"This apparel tech pack image is {img_w}x{img_h} pixels. "
-                            "Locate ONLY the garment sketch / fashion illustration (the clothing line drawing or photo). "
-                            "Exclude: fabric swatches, color sample boxes, text tables, measurement charts, logos, barcodes. "
-                            "Return a JSON object with pixel bounding box of the garment sketch: "
-                            "{\"x\":<left>,\"y\":<top>,\"w\":<width>,\"h\":<height>}. "
-                            "JSON only, no other text."
+                            "This is an apparel tech pack image. "
+                            "Find the garment sketch or fashion illustration "
+                            "(clothing line drawing, fashion sketch, or garment photo). "
+                            "Express its location as percentages of the full image dimensions.\n"
+                            "Return ONLY this JSON:\n"
+                            "{\"left\": <0-100>, \"top\": <0-100>, \"right\": <0-100>, \"bottom\": <0-100>}\n"
+                            "- left/top = top-left corner of the garment sketch (% from left / % from top)\n"
+                            "- right/bottom = bottom-right corner (% from left / % from top)\n"
+                            "Exclude from the region: text paragraphs, fabric/color swatches, "
+                            "measurement tables, logos, barcodes. "
+                            "JSON only, no explanation."
                         ),
                     },
                 ],
@@ -230,12 +237,21 @@ def crop_garment_region(image_path: str, api_key: str) -> str:
                 raw = raw[4:].strip()
 
         coords = json.loads(raw)
-        x  = max(0, int(coords["x"]))
-        y  = max(0, int(coords["y"]))
-        cw = max(20, min(int(coords["w"]), img_w - x))
-        ch = max(20, min(int(coords["h"]), img_h - y))
+        # 百分比 → 像素，加 1% 安全边距防止过度裁剪
+        MARGIN = 1.0
+        left   = max(0.0, float(coords["left"])   - MARGIN) / 100
+        top    = max(0.0, float(coords["top"])    - MARGIN) / 100
+        right  = min(100.0, float(coords["right"]) + MARGIN) / 100
+        bottom = min(100.0, float(coords["bottom"])+ MARGIN) / 100
 
-        cropped = img.crop((x, y, x + cw, y + ch))
+        x0, y0 = int(left  * img_w), int(top    * img_h)
+        x1, y1 = int(right * img_w), int(bottom * img_h)
+
+        # 最小有效尺寸保护
+        if (x1 - x0) < 20 or (y1 - y0) < 20:
+            return image_path
+
+        cropped = img.crop((x0, y0, x1, y1))
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
         os.close(tmp_fd)
         cropped.save(tmp_path, format="PNG")
