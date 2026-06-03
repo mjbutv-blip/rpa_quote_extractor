@@ -183,6 +183,68 @@ def extract_style_image_from_excel(excel_path: str):
     return None
 
 
+def crop_garment_region(image_path: str, api_key: str) -> str:
+    """用 Claude Vision 识别图中的服装款式草图区域并裁剪，返回裁剪后的临时 PNG 路径。
+    若图片无法裁剪或识别失败，则原路径原样返回。
+    """
+    if not _PIL_AVAILABLE or not image_path or not os.path.exists(image_path):
+        return image_path
+    try:
+        with open(image_path, "rb") as f:
+            img_bytes = f.read()
+
+        img = PILImage.open(io.BytesIO(img_bytes)).convert("RGB")
+        img_w, img_h = img.size
+
+        ext = image_path.rsplit(".", 1)[-1].lower()
+        mime = _ext_to_mime(ext) or "image/png"
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+        client = Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=120,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {
+                        "type": "text",
+                        "text": (
+                            f"This apparel tech pack image is {img_w}x{img_h} pixels. "
+                            "Locate ONLY the garment sketch / fashion illustration (the clothing line drawing or photo). "
+                            "Exclude: fabric swatches, color sample boxes, text tables, measurement charts, logos, barcodes. "
+                            "Return a JSON object with pixel bounding box of the garment sketch: "
+                            "{\"x\":<left>,\"y\":<top>,\"w\":<width>,\"h\":<height>}. "
+                            "JSON only, no other text."
+                        ),
+                    },
+                ],
+            }],
+        )
+
+        raw = response.content[0].text.strip()
+        if "```" in raw:
+            raw = raw.split("```")[1].split("```")[0].strip()
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+
+        coords = json.loads(raw)
+        x  = max(0, int(coords["x"]))
+        y  = max(0, int(coords["y"]))
+        cw = max(20, min(int(coords["w"]), img_w - x))
+        ch = max(20, min(int(coords["h"]), img_h - y))
+
+        cropped = img.crop((x, y, x + cw, y + ch))
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(tmp_fd)
+        cropped.save(tmp_path, format="PNG")
+        return tmp_path
+
+    except Exception:
+        return image_path  # 识别失败时返回原图，不影响主流程
+
+
 # ── Claude 提取 ───────────────────────────────────────────────────────────────
 
 def call_claude_to_extract(

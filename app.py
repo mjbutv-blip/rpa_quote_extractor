@@ -5,6 +5,7 @@ import streamlit as st
 
 from extractor_engine import (
     call_claude_to_extract,
+    crop_garment_region,
     extract_image_base64,
     extract_image_from_pdf,
     extract_images_from_excel,
@@ -70,6 +71,17 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     data = call_claude_to_extract(text, api_key, images=images)
                     # 取面积最大的图作为输出模板中的款式图
                     image_path = extract_style_image_from_excel(tmp_file_path)
+
+                # 裁剪款式图：只保留服装草图区域，去掉面料/颜色等其他信息
+                if image_path:
+                    cropped_path = crop_garment_region(image_path, api_key)
+                    if cropped_path != image_path:
+                        # 裁剪成功，删除原始全图临时文件
+                        try:
+                            os.remove(image_path)
+                        except OSError:
+                            pass
+                        image_path = cropped_path
 
                 data["image_path"] = image_path
                 if image_path:
