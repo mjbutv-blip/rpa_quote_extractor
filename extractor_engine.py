@@ -147,8 +147,34 @@ def extract_images_from_excel(excel_path: str) -> list:
     return images
 
 
+def _sketch_score(img_bytes: bytes) -> float:
+    """给图片打分，分数越高越像服装线稿。
+
+    核心逻辑：线稿 = 白色背景（>45%）+ 图片面积大。
+    - 白色背景比例是主要过滤条件（排除时装照、面料纹理等深色图片）
+    - 面积是主要排序依据（线稿图比 Logo、文字框大得多）
+    - 完全空白的图（无任何深色内容）排除
+    """
+    try:
+        img = PILImage.open(io.BytesIO(img_bytes)).convert("L")
+        pixels = list(img.getdata())
+        total = len(pixels)
+        white = sum(1 for p in pixels if p > 210) / total
+        dark  = sum(1 for p in pixels if p < 100) / total
+        area  = img.width * img.height
+        if white < 0.45 or dark < 0.005:   # 过滤深色图片和空白图
+            return 0.0
+        return white * area                  # 白色比例 × 面积
+    except Exception:
+        return 0.0
+
+
 def extract_style_image_from_excel(excel_path: str):
-    """从 Excel 嵌入图片中挑选面积最大的作为款式图，保存为临时 PNG，返回路径或 None。"""
+    """从 Excel 嵌入图片中挑选最像服装线稿的图，保存为临时 PNG，返回路径或 None。
+
+    选图标准：白色背景占比高 × 深色线条存在 × 面积大（加权得分最高者）。
+    这样可区分线稿（白底线条图）与时装照（深色背景）或面料图（均匀纹理）。
+    """
     if not _PIL_AVAILABLE:
         return None
     if not excel_path.lower().endswith((".xlsx", ".xlsm")):
@@ -158,20 +184,16 @@ def extract_style_image_from_excel(excel_path: str):
             media_files = sorted(
                 f for f in z.namelist() if f.startswith("xl/media/") and "." in f.rsplit("/", 1)[-1]
             )
-            best_area, best_bytes = 0, None
+            best_score, best_bytes = 0.0, None
             for media_file in media_files:
                 ext = media_file.rsplit(".", 1)[-1].lower()
                 if _ext_to_mime(ext) is None:
                     continue
                 img_bytes = z.read(media_file)
-                try:
-                    img = PILImage.open(io.BytesIO(img_bytes))
-                    area = img.width * img.height
-                    if area > best_area:
-                        best_area = area
-                        best_bytes = img_bytes
-                except Exception:
-                    pass
+                score = _sketch_score(img_bytes)
+                if score > best_score:
+                    best_score = score
+                    best_bytes = img_bytes
         if best_bytes:
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
             os.close(tmp_fd)
@@ -184,12 +206,11 @@ def extract_style_image_from_excel(excel_path: str):
 
 
 def crop_garment_region(image_path: str, api_key: str = None) -> str:
-    """用 OpenCV 检测做工说明表格边界，裁剪出服装款式草图区域。
+    """用 OpenCV 检测三区域边界，裁剪出中间的服装款式草图。
 
-    完全基于图像处理，不调用 Claude API：
-    1. 形态学水平线检测 → 找表格上边界
-    2. 行密度分析兜底 → 找高密度文字区域起点
-    3. 列投影 → 找款式图左右边界，去掉空白边距
+    工艺单图片通常分三段：
+      [顶部表头] → [中间款式图] → [底部做工说明表格]
+    本函数同时检测顶部和底部边界，只保留中间款式图区域。
     失败时原样返回原图路径。
     """
     if not image_path or not os.path.exists(image_path):
@@ -205,56 +226,51 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
         h, w = img.shape[:2]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # ── 步骤1：形态学水平线检测（找表格边框线）─────────────────
-        # 二值化：深色像素（文字/线条）变为白色
+        # 二值化：深色内容（文字/线条）→ 白色；背景 → 黑色
         _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # 水平线核：宽度至少占图片宽度的 1/4
+        # 形态学水平线检测：找跨越图宽 1/4 以上的横线（表头/表格边框）
         min_line_w = max(10, w // 4)
         h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (min_line_w, 1))
         h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
+        all_line_rows = np.where(np.any(h_lines, axis=1))[0]
 
-        # 在跳过顶部 30% 后，寻找第一条横跨全宽的线
-        skip_y = int(h * 0.30)
-        table_top_y = h  # 默认：无表格，不裁底部
-        line_rows = np.where(np.any(h_lines[skip_y:], axis=1))[0]
-        if len(line_rows) > 0:
-            table_top_y = int(line_rows[0]) + skip_y
+        # ── 步骤1：找顶部表头底边（sketch_top）────────────────────────
+        # 顶部表头：集中在图片顶部 35% 内的水平线群，取最后一条
+        header_zone = int(h * 0.35)
+        header_lines = all_line_rows[all_line_rows < header_zone]
+        sketch_top_y = int(header_lines[-1]) + 4 if len(header_lines) > 0 else 0
 
-        # ── 步骤2：行密度分析兜底（处理无明显边框线的情况）─────────
+        # ── 步骤2：找底部表格顶边（sketch_bottom）─────────────────────
+        # 底部表格：在表头之后、图片下半段的水平线群，取第一条
+        search_from = max(sketch_top_y + 20, int(h * 0.30))
+        bottom_lines = all_line_rows[all_line_rows >= search_from]
+        table_top_y = int(bottom_lines[0]) if len(bottom_lines) > 0 else h
+
+        # 行密度分析兜底：没有明显边框线时，用文字密度判断底部表格起点
         if table_top_y == h:
             row_density = np.sum(binary, axis=1).astype(float) / (w * 255)
-
-            # 平滑后寻找高密度文字区（连续多行密度 > 阈值）
             win = max(3, h // 40)
-            kernel_1d = np.ones(win) / win
-            density_smooth = np.convolve(row_density, kernel_1d, mode='same')
-
-            TEXT_THRESH = 0.10   # 行内超过 10% 像素为深色即判为文字行
-            CONSEC_ROWS = 4      # 连续 N 行均满足才确认为表格区域
-
+            density_smooth = np.convolve(row_density, np.ones(win) / win, mode='same')
+            TEXT_THRESH, CONSEC = 0.10, 4
             count = 0
-            for y in range(skip_y, h):
-                if density_smooth[y] > TEXT_THRESH:
-                    count += 1
-                    if count >= CONSEC_ROWS:
-                        table_top_y = y - CONSEC_ROWS + 1
-                        break
-                else:
-                    count = 0
+            for y in range(search_from, h):
+                count = count + 1 if density_smooth[y] > TEXT_THRESH else 0
+                if count >= CONSEC:
+                    table_top_y = y - CONSEC + 1
+                    break
 
-        # 如果分界线在图片底部 10% 以下，视为无表格，保留完整图片
+        # 若底部分界线在底部 10% 内，视为无表格
         if table_top_y > int(h * 0.90):
             table_top_y = h
 
-        # 留 4px 安全边距，避免把表格首行边框也带进去
-        sketch_h = max(20, table_top_y - 4)
+        sketch_top  = sketch_top_y
+        sketch_bottom = max(sketch_top + 20, table_top_y - 4)
 
-        # ── 步骤3：列投影找款式图左右边界（去空白边距）─────────────
-        sketch_zone = binary[:sketch_h, :]
+        # ── 步骤3：列投影找左右边界（去空白边距）─────────────────────
+        sketch_zone = binary[sketch_top:sketch_bottom, :]
         col_sums = np.sum(sketch_zone, axis=0)
         content_cols = np.where(col_sums > 0)[0]
-
         if len(content_cols) > 0:
             left  = max(0, int(content_cols[0])  - 8)
             right = min(w, int(content_cols[-1]) + 8)
@@ -262,7 +278,7 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
             left, right = 0, w
 
         # ── 裁剪并保存 ───────────────────────────────────────────────
-        cropped = img[:sketch_h, left:right]
+        cropped = img[sketch_top:sketch_bottom, left:right]
         if cropped.shape[0] < 20 or cropped.shape[1] < 20:
             return image_path
 
