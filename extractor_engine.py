@@ -54,25 +54,24 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 
 def extract_image_from_pdf(pdf_path: str):
-    """提取 PDF 第一页面积最大的图片，保存为临时 PNG，返回路径或 None。"""
+    """将 PDF 第一页整体渲染为高清 PNG，返回临时文件路径。
+
+    直接渲染整页（而非提取内嵌光栅图），可完整捕获矢量线稿、文字和图片，
+    不会因为线稿是矢量路径而丢失服装顶部/细节。
+    """
     if not _FITZ_AVAILABLE:
         return None
     try:
         doc = fitz.open(pdf_path)
         page = doc[0]
-        image_list = page.get_images(full=True)
-        if not image_list:
-            doc.close()
-            return None
-        largest = max(image_list, key=lambda img: img[2] * img[3])
-        base_image = doc.extract_image(largest[0])
-        image_bytes = base_image["image"]
+        # 2× 缩放保证清晰度
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
         doc.close()
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
         os.close(tmp_fd)
-        with open(tmp_path, "wb") as f:
-            f.write(image_bytes)
-        return os.path.abspath(tmp_path)
+        pix.save(tmp_path)
+        return tmp_path
     except Exception:
         return None
 
@@ -229,22 +228,30 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
         # 二值化：深色内容（文字/线条）→ 白色；背景 → 黑色
         _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # 形态学水平线检测：找跨越图宽 1/4 以上的横线（表头/表格边框）
-        min_line_w = max(10, w // 4)
-        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (min_line_w, 1))
-        h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
-        all_line_rows = np.where(np.any(h_lines, axis=1))[0]
+        # ── 表头检测用「严格宽核」(≥75% 图宽)：只有真正全宽的表格线才触发 ──
+        # 服装的领口/肩带/接缝线宽度远达不到 75%，不会被误判为表头
+        header_line_w = max(10, w * 3 // 4)
+        hdr_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (header_line_w, 1))
+        hdr_lines  = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hdr_kernel)
+
+        # ── 表格检测用「宽松宽核」(≥25% 图宽)：表格内部格线也能被找到 ──
+        table_line_w = max(10, w // 4)
+        tbl_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (table_line_w, 1))
+        tbl_lines  = cv2.morphologyEx(binary, cv2.MORPH_OPEN, tbl_kernel)
 
         # ── 步骤1：找顶部表头底边（sketch_top）────────────────────────
-        # 顶部表头：集中在图片顶部 35% 内的水平线群，取最后一条
+        # 表头线必须：① 跨越 75%+ 图宽  ② 位于顶部 35% 区域  ③ 至少 2 条（单条可能是服装线）
         header_zone = int(h * 0.35)
-        header_lines = all_line_rows[all_line_rows < header_zone]
-        sketch_top_y = int(header_lines[-1]) + 4 if len(header_lines) > 0 else 0
+        hdr_rows = np.where(np.any(hdr_lines[:header_zone], axis=1))[0]
+        if len(hdr_rows) >= 2:
+            sketch_top_y = int(hdr_rows[-1]) + 4   # 多条宽线 → 确认是表头
+        else:
+            sketch_top_y = 0                         # 零或一条 → 可能是服装线，不裁顶部
 
         # ── 步骤2：找底部表格顶边（sketch_bottom）─────────────────────
-        # 底部表格：在表头之后、图片下半段的水平线群，取第一条
         search_from = max(sketch_top_y + 20, int(h * 0.30))
-        bottom_lines = all_line_rows[all_line_rows >= search_from]
+        tbl_rows = np.where(np.any(tbl_lines, axis=1))[0]
+        bottom_lines = tbl_rows[tbl_rows >= search_from]
         table_top_y = int(bottom_lines[0]) if len(bottom_lines) > 0 else h
 
         # 行密度分析兜底：没有明显边框线时，用文字密度判断底部表格起点
