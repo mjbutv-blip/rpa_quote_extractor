@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import json
 import os
@@ -64,8 +65,8 @@ def extract_image_from_pdf(pdf_path: str):
     try:
         doc = fitz.open(pdf_path)
         page = doc[0]
-        # 2× 缩放保证清晰度
-        mat = fitz.Matrix(2.0, 2.0)
+        # 3× 缩放（约 216 DPI）保证清晰度，避免后续在 Excel 中缩放时模糊
+        mat = fitz.Matrix(3.0, 3.0)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         doc.close()
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
@@ -114,7 +115,10 @@ def extract_text_from_excel(excel_path: str) -> str:
         ws = wb[sheet_name]
         lines.append(f"=== Sheet: {sheet_name} ===")
         for row in ws.iter_rows(values_only=True):
-            row_vals = [str(c) if c is not None else "" for c in row]
+            # 单元格内部常带换行符（如多行尺码标注 "\n  36"），不清理的话 tab 拼接后
+            # 同一行会在文本里被换行符拆成多行，导致行尾的值（如缺了换行符的最后一个
+            # 尺码）看起来跟前面的尺码不是一组，AI 容易漏看。
+            row_vals = [str(c).replace("\n", " ").replace("\r", " ").strip() if c is not None else "" for c in row]
             row_text = "\t".join(row_vals)
             if row_text.strip():
                 lines.append(row_text)
@@ -205,12 +209,15 @@ def extract_style_image_from_excel(excel_path: str):
 
 
 def crop_garment_region(image_path: str, api_key: str = None) -> str:
-    """用 OpenCV 检测三区域边界，裁剪出中间的服装款式草图。
+    """用 OpenCV 检测款式草图区域边界，裁剪出工艺单中间的服装草图，剔除表头/表格干扰。
 
-    工艺单图片通常分三段：
-      [顶部表头] → [中间款式图] → [底部做工说明表格]
-    本函数同时检测顶部和底部边界，只保留中间款式图区域。
-    失败时原样返回原图路径。
+    核心思路（按相邻全宽横线之间的「最大间隙」定位款式图区域）：
+    工艺单的表头字段表格行间距很密（相邻分隔线间隔小），款式图区域上下各有一条
+    边框线，但框内大量留白，与表头行间距相比会形成一个明显更大的间隙。
+    因此：找出所有跨越图宽 ≥70% 的横线，相邻横线间「最大的间隙」就是表头与
+    款式图框之间的分界——间隙前的那条线是 sketch_top，间隙后的那条线是 sketch_bottom。
+    再在该区域内排除框体自身的边框线（横线/竖线），对真实画稿内容做紧凑包围裁剪。
+    失败或无法定位时原样返回原图路径。
     """
     if not image_path or not os.path.exists(image_path):
         return image_path
@@ -228,65 +235,74 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
         # 二值化：深色内容（文字/线条）→ 白色；背景 → 黑色
         _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-        # ── 表头检测用「严格宽核」(≥75% 图宽)：只有真正全宽的表格线才触发 ──
-        # 服装的领口/肩带/接缝线宽度远达不到 75%，不会被误判为表头
-        header_line_w = max(10, w * 3 // 4)
-        hdr_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (header_line_w, 1))
-        hdr_lines  = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hdr_kernel)
+        # ── 步骤1：找出所有跨越图宽 ≥70% 的横线（表格分隔线/款式图框边框） ──
+        line_w = max(10, w * 7 // 10)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (line_w, 1))
+        lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        line_rows = np.where(np.any(lines, axis=1))[0]
+        if len(line_rows) == 0:
+            return image_path
 
-        # ── 表格检测用「宽松宽核」(≥25% 图宽)：表格内部格线也能被找到 ──
-        table_line_w = max(10, w // 4)
-        tbl_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (table_line_w, 1))
-        tbl_lines  = cv2.morphologyEx(binary, cv2.MORPH_OPEN, tbl_kernel)
+        # 合并相邻像素行为同一条线，取每组中心 y 坐标
+        groups = []
+        start = prev = line_rows[0]
+        for y in line_rows[1:]:
+            if y - prev > 2:
+                groups.append((start + prev) / 2)
+                start = y
+            prev = y
+        groups.append((start + prev) / 2)
+        if len(groups) < 2:
+            return image_path
 
-        # ── 步骤1：找顶部表头底边（sketch_top）────────────────────────
-        # 表头线必须：① 跨越 75%+ 图宽  ② 位于顶部 35% 区域  ③ 至少 2 条（单条可能是服装线）
-        header_zone = int(h * 0.35)
-        hdr_rows = np.where(np.any(hdr_lines[:header_zone], axis=1))[0]
-        if len(hdr_rows) >= 2:
-            sketch_top_y = int(hdr_rows[-1]) + 4   # 多条宽线 → 确认是表头
-        else:
-            sketch_top_y = 0                         # 零或一条 → 可能是服装线，不裁顶部
+        # ── 步骤2：找相邻两条线之间的最大间隙 → 间隙前后即款式图框的上下边界 ──
+        gaps = [(groups[i + 1] - groups[i], i) for i in range(len(groups) - 1)]
+        gaps.sort(reverse=True)
+        biggest_gap, idx = gaps[0]
 
-        # ── 步骤2：找底部表格顶边（sketch_bottom）─────────────────────
-        search_from = max(sketch_top_y + 20, int(h * 0.30))
-        tbl_rows = np.where(np.any(tbl_lines, axis=1))[0]
-        bottom_lines = tbl_rows[tbl_rows >= search_from]
-        table_top_y = int(bottom_lines[0]) if len(bottom_lines) > 0 else h
+        # 间隙必须足够大（页面高度 10% 以上），且发生在页面上半部分，
+        # 否则说明这页没有「表头/款式图」式的明显分区，不裁剪以免误判
+        if biggest_gap < h * 0.10 or groups[idx] > h * 0.6:
+            return image_path
 
-        # 行密度分析兜底：没有明显边框线时，用文字密度判断底部表格起点
-        if table_top_y == h:
-            row_density = np.sum(binary, axis=1).astype(float) / (w * 255)
-            win = max(3, h // 40)
-            density_smooth = np.convolve(row_density, np.ones(win) / win, mode='same')
-            TEXT_THRESH, CONSEC = 0.10, 4
-            count = 0
-            for y in range(search_from, h):
-                count = count + 1 if density_smooth[y] > TEXT_THRESH else 0
-                if count >= CONSEC:
-                    table_top_y = y - CONSEC + 1
-                    break
+        sketch_top = int(groups[idx])
+        sketch_bottom = int(groups[idx + 1])
+        if sketch_bottom - sketch_top < 20:
+            return image_path
 
-        # 若底部分界线在底部 10% 内，视为无表格
-        if table_top_y > int(h * 0.90):
-            table_top_y = h
+        # ── 步骤3：在框内做紧凑包围裁剪，排除框体自身边框线干扰 ──
+        INSET = 4  # 向框内收缩，避开边框线的抗锯齿残留像素
+        zone = binary[sketch_top + INSET: sketch_bottom - INSET, :]
+        zh, zw = zone.shape
 
-        sketch_top  = sketch_top_y
-        sketch_bottom = max(sketch_top + 20, table_top_y - 4)
+        # 屏蔽覆盖率 ≥85% 的整行/整列——这些是边框线本身，不是画稿内容
+        col_coverage = zone.sum(axis=0) / 255 / zh
+        zone_masked = zone.copy()
+        zone_masked[:, col_coverage >= 0.85] = 0
+        row_coverage = zone_masked.sum(axis=1) / 255 / zw
+        zone_masked[row_coverage >= 0.85, :] = 0
 
-        # ── 步骤3：列投影找左右边界（去空白边距）─────────────────────
-        sketch_zone = binary[sketch_top:sketch_bottom, :]
-        col_sums = np.sum(sketch_zone, axis=0)
-        content_cols = np.where(col_sums > 0)[0]
-        if len(content_cols) > 0:
-            left  = max(0, int(content_cols[0])  - 8)
-            right = min(w, int(content_cols[-1]) + 8)
-        else:
-            left, right = 0, w
+        # 密度阈值过滤掉边框抗锯齿残留的零星像素，只保留真实画稿内容
+        MIN_DENSITY = 0.01
+        content_cols = np.where(zone_masked.sum(axis=0) / 255 / zh > MIN_DENSITY)[0]
+        content_rows = np.where(zone_masked.sum(axis=1) / 255 / zw > MIN_DENSITY)[0]
+        if len(content_cols) == 0 or len(content_rows) == 0:
+            return image_path
 
-        # ── 裁剪并保存 ───────────────────────────────────────────────
-        cropped = img[sketch_top:sketch_bottom, left:right]
+        MARGIN = 10
+        left   = max(0,  int(content_cols.min()) - MARGIN)
+        right  = min(zw, int(content_cols.max()) + MARGIN)
+        top    = max(0,  int(content_rows.min()) - MARGIN)
+        bottom = min(zh, int(content_rows.max()) + MARGIN)
+
+        cropped = img[sketch_top + INSET + top: sketch_top + INSET + bottom, left:right]
         if cropped.shape[0] < 20 or cropped.shape[1] < 20:
+            return image_path
+
+        # 安全阀：宽高比超出合理范围时，宁可不裁，回退到裁剪前的原图
+        crop_h, crop_w = cropped.shape[:2]
+        crop_ratio = crop_w / crop_h
+        if crop_ratio < 0.2 or crop_ratio > 5.0:
             return image_path
 
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".png")
@@ -300,6 +316,39 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
 
 # ── Claude 提取 ───────────────────────────────────────────────────────────────
 
+# 同一份工艺单（文本+图片完全一致）的提取结果落盘缓存，避免重复调用 AI 时
+# 因模型输出的微小随机性导致同一文件两次提取结果不一致。
+_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".extraction_cache.json")
+
+
+def _cache_key(text: str, images: list) -> str:
+    h = hashlib.sha256()
+    h.update(text.encode("utf-8"))
+    if images:
+        for b64, mime in images:
+            h.update(b64.encode("utf-8"))
+            h.update(mime.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _load_cache() -> dict:
+    if os.path.exists(_CACHE_PATH):
+        try:
+            with open(_CACHE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def call_claude_to_extract(
     text: str,
     api_key: str,
@@ -309,37 +358,65 @@ def call_claude_to_extract(
 
     images: [(base64_str, media_type), ...] 或 None。
     可传入多张图片（款式图、面料色卡等），Claude 会综合所有图片提取信息。
+
+    同一份文件（文本+图片内容完全一致）会直接复用缓存结果，保证重复提取时
+    100% 输出一致；文件内容变化（哪怕一个字）会被当作新文件重新调用 AI。
     """
+    cache = _load_cache()
+    key = _cache_key(text, images)
+    if key in cache:
+        return dict(cache[key])
+
     client = Anthropic(api_key=api_key)
 
     system_prompt = (
         "You are an expert data extractor for apparel tech packs. "
         "You may receive multiple images: style/fashion photos AND fabric swatch or color sample images. "
-        "Analyze ALL provided images together with the text to extract the following 5 fields into a valid JSON object.\n"
+        "Analyze ALL provided images together with the text to extract the following 5 fields into a valid JSON object.\n\n"
+        "STRICT FIDELITY RULES (apply to every field):\n"
+        "- Extract ONLY text that literally appears in the source document (PDF/Excel) or is literally printed/visible in an image.\n"
+        "- NEVER infer, guess, paraphrase, or add descriptive words that are not present in the source. "
+        "Do not embellish product_name with style adjectives, marketing language, or category words unless those exact words appear in the source text.\n"
+        "- If a field cannot be found verbatim in the source, return an empty string \"\" for that field. Do not fabricate a plausible-sounding value.\n"
+        "- Do not normalize, round, or 'clean up' numbers/codes beyond translating them to Chinese where requested below.\n\n"
         "JSON Schema:\n"
         "{\n"
-        "  \"order_id\": \"String. Extract the order number / 款号 / 订单号, e.g., '2118879'.\",\n"
-        "  \"product_name\": \"String. Extract the product name / 品名, translate to Chinese, e.g., '无钢圈文胸'. "
-        "If text and style image conflict, trust the image.\",\n"
-        "  \"fabric_quality\": \"String. Extract the fabric composition and weight / 面料品质, translate to Chinese, "
+        "  \"order_id\": \"String. Extract the order number / 款号 / 订单号 EXACTLY as written, e.g., '2118879'. Do not alter digits or formatting.\",\n"
+        "  \"product_name\": \"String. Extract the product name / 品名 field exactly as labeled in the source text (look for keywords like '品名', 'Style Name', 'Description', 'Item Name'). "
+        "Translate word-for-word into Chinese — do NOT summarize, paraphrase, or rewrite the phrase structure. "
+        "The output word count/concept count must match the source: if the source says only '连衣裙', output only '连衣裙' — do not expand it into something like '碎花连衣裙' or '夏季休闲连衣裙' unless those exact descriptive words are also printed in the source. "
+        "NEVER combine product_name with fabric, color, fit, season, or category information from elsewhere in the document — those belong in other fields, not here. "
+        "Do not use the style image to ADD adjectives to product_name — images are only for verifying spelling/wording already given in text, never for inventing new descriptive words. "
+        "If in doubt between a short literal translation and a richer one, always choose the shorter, literal one.\",\n"
+        "  \"fabric_quality\": \"String. Extract the fabric composition and weight / 面料品质 exactly as printed, translate to Chinese, "
         "e.g., '80%锦纶 20%弹性纤维 170GSM'. "
-        "If fabric specs appear in an image (printed label, swatch tag, or fabric table in the image), extract from there too.\",\n"
-        "  \"color_print\": \"String. Extract the color or print name / 颜色/印花, translate to Chinese, e.g., '白色' or '碎花印花'. "
-        "If a color swatch or print image is provided, describe the color/print based on the image — this is the primary source.\",\n"
-        "  \"size_range\": \"String. Extract ALL sizes from the size grading table or size list. "
+        "If fabric specs appear in an image (printed label, swatch tag, or fabric table in the image), extract from there too, verbatim.\",\n"
+        "  \"color_print\": \"String. Extract the color or print name / 颜色/印花 exactly as named in the source, translate to Chinese, e.g., '白色' or '碎花印花'. "
+        "If a color swatch or print image is provided, name the color/print only as labeled — do not invent a color name not present in the source.\",\n"
+        "  \"size_range\": \"String. Extract ONLY the size grading values themselves — never the surrounding label text or unrelated numbers. "
         "Rules:\\n"
-        "  1. Search for keywords: 'Size', 'Sizes', 'Size Range', 'Grading', '尺码', '规格', '号型', or any size grid/table.\\n"
-        "  2. Bra/lingerie band+cup sizes: e.g. '70A/75A/80A/85A/90A' or '32A/34B/36B/38C'.\\n"
-        "  3. Alpha sizes: e.g. 'XS/S/M/L/XL/XXL'.\\n"
-        "  4. Numeric sizes: e.g. '36/38/40/42/44'.\\n"
-        "  5. If a 2-axis size grid exists (band vs cup), list every combination, e.g. '70A/70B/75A/75B/80A/80B'.\\n"
-        "  6. Do NOT pick up fabric weights, order quantities, cm/inch measurements, or prices as sizes.\\n"
-        "  7. Separate all sizes with '/'. Include every size — do not omit any.\"\n"
+        "  1. Locate the field using keywords: 'Size', 'Sizes', 'Size Range', 'Grading', '尺码', '规格', '号型', or any size grid/table.\\n"
+        "  2. If the document contains MULTIPLE size-related tables or fields (e.g. a generic size chart/measurement spec table AND a separate order/quantity breakdown table showing which sizes were actually ordered), "
+        "always prefer the table tied to THIS specific order/quantity breakdown — i.e. the sizes that have a quantity, checkmark, circle, bold/highlighted marking, or are listed in the order confirmation section. "
+        "Do NOT use a generic reference size chart (e.g. a full size-run table meant for general grading specs) if a more specific order-level size list exists elsewhere in the document.\\n"
+        "  3. If sizes are marked as selected/excluded (e.g. some sizes crossed out, greyed out, or marked 'N/A'/'不做'/'取消'), exclude those — only include sizes that are actually active/ordered for this style.\\n"
+        "  3B. SPECIAL CASE — cover-page 'SIZES: X-Y' label vs. the actual MEASUREMENTS SPEC table: a cover page or summary box often prints a short range label like 'SIZES: 036-046', "
+        "but this is frequently an imprecise/outdated abbreviation. The MEASUREMENTS SPEC table's actual enumerated size header row (the row listing each size as its own column, e.g. 36/38/40/42/44/46/48) "
+        "is the authoritative, complete source — always enumerate every size column actually present in that table, even if a cover-page label states a narrower range. "
+        "Never let a summary label on a cover page cause you to drop a size that is clearly present as its own column in the measurement spec table.\\n"
+        "  4. Once located, extract ONLY the numeric/alpha size tokens themselves — discard the keyword/label, units, and any surrounding descriptive text.\\n"
+        "  5. Bra/lingerie band+cup sizes: e.g. '70A/75A/80A/85A/90A' or '32A/34B/36B/38C'.\\n"
+        "  6. Alpha sizes: e.g. 'XS/S/M/L/XL/XXL'.\\n"
+        "  7. Numeric sizes: e.g. '36/38/40/42/44'.\\n"
+        "  8. If a 2-axis size grid exists (band vs cup), list every combination, e.g. '70A/70B/75A/75B/80A/80B'.\\n"
+        "  9. Do NOT pick up fabric weights, order quantities, cm/inch body measurements, prices, dates, or any other numbers as sizes.\\n"
+        "  10. Separate all sizes with '/', in ascending order. Include every active size present — do not omit any, and do not add sizes not present.\\n"
+        "  11. If multiple plausible size lists conflict and you cannot determine which is order-specific, prefer the list that appears closest to quantity/order columns over a standalone spec-sheet size chart.\"\n"
         "}\n"
         "IMPORTANT: When multiple images are provided, treat them collectively:\n"
-        "- Use style/garment images to verify product_name.\n"
-        "- Use fabric swatch images or color sample images to determine fabric_quality and color_print.\n"
-        "- If an image shows text (labels, tags, printed specs), read that text and use it for extraction.\n"
+        "- Use style/garment images to verify product_name, using only labels/text actually visible in the image.\n"
+        "- Use fabric swatch images or color sample images to determine fabric_quality and color_print, using only what is printed/visible.\n"
+        "- If an image shows text (labels, tags, printed specs), read that text verbatim and use it for extraction.\n"
         "Respond ONLY with the JSON object. "
         "Do not include markdown formatting like ```json or any conversational text."
     )
@@ -359,6 +436,7 @@ def call_claude_to_extract(
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
+        temperature=0,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
@@ -369,4 +447,9 @@ def call_claude_to_extract(
     elif res_text.startswith("```"):
         res_text = res_text.split("```")[1].split("```")[0].strip()
 
-    return json.loads(res_text)
+    result = json.loads(res_text)
+
+    cache[key] = result
+    _save_cache(cache)
+
+    return dict(result)

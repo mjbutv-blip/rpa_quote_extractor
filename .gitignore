@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.extraction_cache.json
+templates/生成的*.xlsx
+templates/.~*.xlsx
