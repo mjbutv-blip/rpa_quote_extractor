@@ -5,11 +5,6 @@ import streamlit as st
 
 from extractor_engine import (
     call_claude_to_extract,
-    crop_garment_region,
-    extract_image_base64,
-    extract_image_from_pdf,
-    extract_images_from_excel,
-    extract_style_image_from_excel,
     extract_text_from_excel,
     extract_text_from_pdf,
 )
@@ -42,7 +37,6 @@ if st.button("🚀 开始批量提取并生成报价单"):
         st.error(f"未找到模板文件：{template_path}，请将「报价单总表模板.xlsx」放入 templates/ 目录。")
     else:
         extracted_results = []
-        image_tmp_files = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
@@ -57,40 +51,14 @@ if st.button("🚀 开始批量提取并生成报价单"):
 
             try:
                 if is_pdf:
-                    # PDF：提取文本 + 单张最大图（多模态）
                     text = extract_text_from_pdf(tmp_file_path)
-                    img_result = extract_image_base64(tmp_file_path)
-                    images = [img_result] if img_result else None
-                    data = call_claude_to_extract(text, api_key, images=images)
-                    image_path = extract_image_from_pdf(tmp_file_path)
                 else:
-                    # Excel：提取文本 + 所有嵌入图片（多模态）
                     text = extract_text_from_excel(tmp_file_path)
-                    excel_images = extract_images_from_excel(tmp_file_path)
-                    images = excel_images if excel_images else None
-                    data = call_claude_to_extract(text, api_key, images=images)
-                    # 取面积最大的图作为输出模板中的款式图
-                    image_path = extract_style_image_from_excel(tmp_file_path)
 
-                # PDF 和 Excel 都可能提取到包含多种信息的合图，统一裁剪出款式草图区域
-                if image_path:
-                    cropped_path = crop_garment_region(image_path, api_key)
-                    if cropped_path != image_path:
-                        try:
-                            os.remove(image_path)
-                        except OSError:
-                            pass
-                        image_path = cropped_path
-
-                data["image_path"] = image_path
-                if image_path:
-                    image_tmp_files.append(image_path)
-
+                data = call_claude_to_extract(text, api_key)
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
-                img_count = len(images) if images else 0
-                img_note = f"含 {img_count} 张图片 🖼️" if img_count else "无图片"
-                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！（{img_note}）")
+                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！")
 
             except Exception as e:
                 st.error(f"❌ {uploaded_file.name} 提取失败: {str(e)}")
@@ -118,10 +86,3 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     )
             except Exception as e:
                 st.error(f"写入 Excel 时发生错误: {str(e)}")
-            finally:
-                for img_path in image_tmp_files:
-                    try:
-                        if os.path.exists(img_path):
-                            os.remove(img_path)
-                    except OSError:
-                        pass
