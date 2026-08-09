@@ -273,7 +273,7 @@ def _extract_sizes_from_ean_table(rows: list):
 
 def _extract_sizes_from_measurement_table(rows: list):
     table_text = " ".join(" ".join(_clean_cell(c) for c in row) for row in rows[:8]).lower()
-    if "german size" not in table_text:
+    if "german size" not in table_text and "germansize" not in _ascii_key(table_text):
         return None
 
     candidate_rows = []
@@ -290,6 +290,28 @@ def _extract_sizes_from_measurement_table(rows: list):
     return max(candidate_rows, key=len)
 
 
+def _extract_sizes_from_measurement_text(text: str):
+    lines = [_clean_cell(line) for line in text.splitlines()]
+    for idx, line in enumerate(lines):
+        if "germansize" not in _ascii_key(line):
+            continue
+
+        window = lines[idx + 1: idx + 40]
+        bra_sizes = []
+        slash_sizes = []
+        for item in window:
+            if _BRA_SIZE_RE.fullmatch(item):
+                bra_sizes.append(item)
+            elif re.fullmatch(r"\d{2,3}/\d{2,3}", item):
+                slash_sizes.append(item)
+
+        if len(bra_sizes) >= 2:
+            return bra_sizes
+        if len(slash_sizes) >= 2:
+            return slash_sizes
+    return None
+
+
 def extract_size_range_from_pdf(pdf_path: str) -> str:
     """从 PDF 表格中按业务优先级提取报价用尺码范围。
 
@@ -304,8 +326,10 @@ def extract_size_range_from_pdf(pdf_path: str) -> str:
         return ""
 
     all_tables = []
+    page_texts = []
     try:
         for page in doc:
+            page_texts.append(page.get_text("text"))
             try:
                 tables = page.find_tables().tables
             except Exception:
@@ -331,6 +355,10 @@ def extract_size_range_from_pdf(pdf_path: str) -> str:
             sizes = extractor(rows)
             if sizes:
                 return _format_size_range(sizes)
+    for text in page_texts:
+        sizes = _extract_sizes_from_measurement_text(text)
+        if sizes:
+            return _format_size_range(sizes)
     return ""
 
 
