@@ -15,7 +15,7 @@ from excel_writer import write_to_template
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
 
-st.title("📂 服装工艺单 PDF / Excel 自动化提取与 RPA 填表系统")
+st.title("服装工艺单 PDF / Excel 自动化提取与 RPA 填表系统")
 st.write("上传多款产品的工艺单（PDF 或 Excel），AI 将自动提取核心字段并填入报价单总表模板中。")
 
 api_key = st.sidebar.text_input(
@@ -43,7 +43,7 @@ def _order_id_from_filename(filename: str) -> str:
     return match.group(0) if match else ""
 
 
-if st.button("🚀 开始批量提取并生成报价单"):
+if st.button("开始批量提取并生成报价单"):
     if not api_key:
         st.error("请先在左侧输入您的 Anthropic API Key！")
     elif not uploaded_files:
@@ -91,10 +91,10 @@ if st.button("🚀 开始批量提取并生成报价单"):
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
-                st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！")
+                st.success(f"[{file_type_label}] {uploaded_file.name} 提取成功！")
 
             except Exception as e:
-                st.error(f"❌ {uploaded_file.name} 提取失败: {str(e)}")
+                st.error(f"{uploaded_file.name} 提取失败: {str(e)}")
             finally:
                 if os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
@@ -108,12 +108,11 @@ if st.button("🚀 开始批量提取并生成报价单"):
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
                 write_to_template(extracted_results, template_path, output_path)
-                st.balloons()
-                st.success("🎉 报价总表生成成功！")
+                st.success("报价总表生成成功！")
 
                 with open(output_path, "rb") as f:
                     st.download_button(
-                        label="📥 点击下载最新生成的报价单总表.xlsx",
+                        label="点击下载最新生成的报价单总表.xlsx",
                         data=f,
                         file_name="生成的报价单总表.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
