@@ -76,12 +76,18 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     order_id = _order_id_from_filename(uploaded_file.name)
                     if order_id:
                         data["order_id"] = order_id
-                    fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
-                    if fabric_quality:
-                        data["fabric_quality"] = fabric_quality
-                    size_range = extract_size_range_from_pdf(tmp_file_path)
-                    if size_range:
-                        data["size_range"] = size_range
+                    try:
+                        fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
+                        if fabric_quality:
+                            data["fabric_quality"] = fabric_quality
+                    except Exception:
+                        pass
+                    try:
+                        size_range = extract_size_range_from_pdf(tmp_file_path)
+                        if size_range:
+                            data["size_range"] = size_range
+                    except Exception:
+                        pass
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"

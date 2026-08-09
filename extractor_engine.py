@@ -286,7 +286,10 @@ def extract_fabric_quality_from_pdf(pdf_path: str) -> str:
                     continue
                 fabric_rows = _extract_fabric_rows_from_table(rows)
                 if fabric_rows:
-                    return "\n\n".join(fabric_rows)
+                    result = "\n\n".join(fabric_rows)
+                    if re.search(r"[A-Za-z]{2,}", result):
+                        return ""
+                    return result
     finally:
         doc.close()
     return ""
