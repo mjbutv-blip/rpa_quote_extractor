@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 
 import streamlit as st
@@ -29,6 +30,13 @@ uploaded_files = st.file_uploader(
 )
 template_path = "templates/报价单总表模板.xlsx"
 
+
+def _natural_sort_key(filename: str):
+    """按文件名中的数字自然排序，保证批量文件稳定写入顺序。"""
+    parts = re.split(r"(\d+)", filename.lower())
+    return [int(part) if part.isdigit() else part for part in parts]
+
+
 if st.button("🚀 开始批量提取并生成报价单"):
     if not api_key:
         st.error("请先在左侧输入您的 Anthropic API Key！")
@@ -40,9 +48,10 @@ if st.button("🚀 开始批量提取并生成报价单"):
         extracted_results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
+        files_to_process = sorted(uploaded_files, key=lambda f: _natural_sort_key(f.name))
 
-        for idx, uploaded_file in enumerate(uploaded_files):
-            status_text.text(f"正在处理 ({idx+1}/{len(uploaded_files)}): {uploaded_file.name}...")
+        for idx, uploaded_file in enumerate(files_to_process):
+            status_text.text(f"正在处理 ({idx+1}/{len(files_to_process)}): {uploaded_file.name}...")
             file_ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
             is_pdf = file_ext == "pdf"
 
@@ -61,6 +70,7 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     size_range = extract_size_range_from_pdf(tmp_file_path)
                     if size_range:
                         data["size_range"] = size_range
+                data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
                 st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！")
@@ -71,11 +81,12 @@ if st.button("🚀 开始批量提取并生成报价单"):
                 if os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
 
-            progress_bar.progress((idx + 1) / len(uploaded_files))
+            progress_bar.progress((idx + 1) / len(files_to_process))
 
         status_text.text("所有文件提取完毕！正在写入 Excel...")
 
         if extracted_results:
+            extracted_results.sort(key=lambda data: _natural_sort_key(data.get("_source_filename", "")))
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
                 write_to_template(extracted_results, template_path, output_path)
