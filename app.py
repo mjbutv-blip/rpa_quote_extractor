@@ -6,7 +6,6 @@ import streamlit as st
 
 from extractor_engine import (
     call_claude_to_extract,
-    extract_color_print_from_text,
     extract_fabric_quality_from_pdf,
     extract_size_range_from_pdf,
     extract_text_from_excel,
@@ -48,6 +47,32 @@ def _ascii_safe(value) -> str:
     return str(value).encode("ascii", "backslashreplace").decode("ascii")
 
 
+def _extract_color_print_from_text(text: str, fabric_quality: str = "") -> str:
+    text_l = (text or "").lower()
+    fabric = fabric_quality or ""
+    is_multicoloured = "multicoloured" in text_l or "multi coloured" in text_l
+    has_lace = "花边" in fabric
+    has_logo_print = "logo" in text_l and ("rubber print" in text_l or "橡胶" in text)
+
+    if is_multicoloured and has_lace:
+        lines = ["大身前后片:双色花边", "其他材料:黑色配色"]
+    elif is_multicoloured:
+        lines = ["大身前后片:净色", "其他材料:配色"]
+    else:
+        lines = ["大身前后片:净色"]
+
+    if has_logo_print:
+        lines.append("身穿左下有单印印字logo")
+
+    lines.extend([
+        "",
+        "1.定位问题:——",
+        "2.印花朝向问题:——",
+        "3.条纹/格子款式是否对条/对格:——",
+    ])
+    return "\n".join(lines)
+
+
 if st.button("开始批量提取并生成报价单"):
     if not api_key:
         st.error("Please enter your Anthropic API Key.")
@@ -87,7 +112,7 @@ if st.button("开始批量提取并生成报价单"):
                             data["fabric_quality"] = fabric_quality
                     except Exception:
                         pass
-                    color_print = extract_color_print_from_text(text, data.get("fabric_quality", ""))
+                    color_print = _extract_color_print_from_text(text, data.get("fabric_quality", ""))
                     if color_print:
                         data["color_print"] = color_print
                     try:

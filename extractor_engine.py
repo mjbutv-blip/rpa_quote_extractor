@@ -363,32 +363,6 @@ def extract_fabric_quality_from_pdf(pdf_path: str) -> str:
     return ""
 
 
-def extract_color_print_from_text(text: str, fabric_quality: str = "") -> str:
-    """按报价单口径生成颜色/印花说明。"""
-    text_l = (text or "").lower()
-    fabric = fabric_quality or ""
-    is_multicoloured = "multicoloured" in text_l or "multi coloured" in text_l
-    has_lace = "花边" in fabric
-    has_logo_print = "logo" in text_l and ("rubber print" in text_l or "橡胶" in text)
-
-    if is_multicoloured and has_lace:
-        lines = ["大身前后片:双色花边", "其他材料:黑色配色"]
-    elif is_multicoloured:
-        lines = ["大身前后片:净色", "其他材料:配色"]
-    else:
-        lines = ["大身前后片:净色"]
-
-    if has_logo_print:
-        lines.append("身穿左下有单印印字logo")
-
-    lines.extend([
-        "",
-        "1.定位问题:——",
-        "2.印花朝向问题:——",
-        "3.条纹/格子款式是否对条/对格:——",
-    ])
-    return "\n".join(lines)
-
 def extract_text_from_pdf(pdf_path: str) -> str:
     if not _PDFPLUMBER_AVAILABLE:
         raise RuntimeError("pdfplumber 未安装，无法处理 PDF 文件。")
