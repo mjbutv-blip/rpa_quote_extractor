@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import zipfile
 
@@ -41,6 +42,148 @@ def _ext_to_mime(ext: str):
 
 
 # ── PDF 相关 ──────────────────────────────────────────────────────────────────
+
+_SIZE_TOKEN_RE = re.compile(r"^(?:\d{2,3}/\d{2,3}|\d{2,3}[A-Z]{1,2}|[A-Z]{1,3})$")
+_BRA_SIZE_RE = re.compile(r"^\d{2,3}[A-Z]{1,2}$")
+_QTY_RE = re.compile(r"^\d+(?:[.,]\d+)?$")
+
+
+def _clean_cell(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _size_tokens_from_cells(cells) -> list:
+    tokens = []
+    for cell in cells:
+        text = _clean_cell(cell)
+        if not text:
+            continue
+        for part in re.split(r"[;\s,|]+", text):
+            part = part.strip()
+            if _SIZE_TOKEN_RE.fullmatch(part) and part not in {"AT", "GB", "IT", "HR", "SI", "CZ", "PL", "DE"}:
+                tokens.append(part)
+    return tokens
+
+
+def _dedupe_keep_order(values: list) -> list:
+    seen = set()
+    result = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _format_size_range(sizes: list) -> str:
+    return ", ".join(_dedupe_keep_order(sizes))
+
+
+def _extract_sizes_from_total_table(rows: list):
+    for idx, row in enumerate(rows):
+        row_text = " ".join(_clean_cell(c) for c in row).lower()
+        if "total per size / colour" not in row_text:
+            continue
+        for next_row in rows[idx + 1: idx + 4]:
+            sizes = _size_tokens_from_cells(next_row)
+            if len(sizes) >= 2:
+                return sizes
+    return None
+
+
+def _extract_sizes_from_lot_table(rows: list):
+    first_row = " ".join(_clean_cell(c) for c in rows[0]).lower() if rows else ""
+    if "lottype" not in first_row:
+        return None
+    for row in rows[1:]:
+        sizes = _size_tokens_from_cells(row)
+        if len(sizes) >= 2:
+            return sizes
+    return None
+
+
+def _extract_sizes_from_ean_table(rows: list):
+    table_text = " ".join(" ".join(_clean_cell(c) for c in row) for row in rows).lower()
+    if "ean" not in table_text or "pcs" not in table_text:
+        return None
+    sizes = []
+    for row in rows:
+        row_vals = [_clean_cell(c) for c in row]
+        if not row_vals:
+            continue
+        size = row_vals[0]
+        if not _SIZE_TOKEN_RE.fullmatch(size):
+            continue
+        has_qty = any(_QTY_RE.fullmatch(v) for v in row_vals[1:])
+        has_dash_qty = any(v in {"--", "-"} for v in row_vals[1:])
+        if has_qty and not has_dash_qty:
+            sizes.append(size)
+    return sizes or None
+
+
+def _extract_sizes_from_measurement_table(rows: list):
+    table_text = " ".join(" ".join(_clean_cell(c) for c in row) for row in rows[:8]).lower()
+    if "german size" not in table_text:
+        return None
+
+    candidate_rows = []
+    for row in rows[:8]:
+        sizes = _size_tokens_from_cells(row)
+        if len(sizes) >= 2:
+            candidate_rows.append(sizes)
+    if not candidate_rows:
+        return None
+
+    bra_rows = [sizes for sizes in candidate_rows if all(_BRA_SIZE_RE.fullmatch(s) for s in sizes)]
+    if bra_rows:
+        return max(bra_rows, key=len)
+    return max(candidate_rows, key=len)
+
+
+def extract_size_range_from_pdf(pdf_path: str) -> str:
+    """从 PDF 表格中按业务优先级提取报价用尺码范围。
+
+    优先使用实际下单数量表，其次使用 EAN/pcs 表中有数量的尺码，最后才从量体表
+    读取尺码表头。文胸量体表有多层尺码时，优先取杯码行（如 75B/85B）。
+    """
+    if not _FITZ_AVAILABLE:
+        return ""
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return ""
+
+    all_tables = []
+    try:
+        for page in doc:
+            try:
+                tables = page.find_tables().tables
+            except Exception:
+                tables = []
+            for table in tables:
+                try:
+                    rows = table.extract()
+                except Exception:
+                    continue
+                if rows:
+                    all_tables.append(rows)
+    finally:
+        doc.close()
+
+    extractors = (
+        _extract_sizes_from_total_table,
+        _extract_sizes_from_lot_table,
+        _extract_sizes_from_ean_table,
+        _extract_sizes_from_measurement_table,
+    )
+    for extractor in extractors:
+        for rows in all_tables:
+            sizes = extractor(rows)
+            if sizes:
+                return _format_size_range(sizes)
+    return ""
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     if not _PDFPLUMBER_AVAILABLE:

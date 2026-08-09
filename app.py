@@ -5,6 +5,7 @@ import streamlit as st
 
 from extractor_engine import (
     call_claude_to_extract,
+    extract_size_range_from_pdf,
     extract_text_from_excel,
     extract_text_from_pdf,
 )
@@ -56,6 +57,10 @@ if st.button("🚀 开始批量提取并生成报价单"):
                     text = extract_text_from_excel(tmp_file_path)
 
                 data = call_claude_to_extract(text, api_key)
+                if is_pdf:
+                    size_range = extract_size_range_from_pdf(tmp_file_path)
+                    if size_range:
+                        data["size_range"] = size_range
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
                 st.success(f"✅ [{file_type_label}] {uploaded_file.name} 提取成功！")
