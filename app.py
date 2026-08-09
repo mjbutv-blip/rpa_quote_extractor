@@ -43,13 +43,17 @@ def _order_id_from_filename(filename: str) -> str:
     return match.group(0) if match else ""
 
 
+def _ascii_safe(value) -> str:
+    return str(value).encode("ascii", "backslashreplace").decode("ascii")
+
+
 if st.button("开始批量提取并生成报价单"):
     if not api_key:
-        st.error("请先在左侧输入您的 Anthropic API Key！")
+        st.error("Please enter your Anthropic API Key.")
     elif not uploaded_files:
-        st.warning("请至少上传一个文件！")
+        st.warning("Please upload at least one file.")
     elif not os.path.exists(template_path):
-        st.error(f"未找到模板文件：{template_path}，请将「报价单总表模板.xlsx」放入 templates/ 目录。")
+        st.error(f"Template file not found: {template_path}")
     else:
         extracted_results = []
         progress_bar = st.progress(0)
@@ -57,7 +61,7 @@ if st.button("开始批量提取并生成报价单"):
         files_to_process = sorted(uploaded_files, key=lambda f: _natural_sort_key(f.name))
 
         for idx, uploaded_file in enumerate(files_to_process):
-            status_text.text(f"正在处理 ({idx+1}/{len(files_to_process)}): {uploaded_file.name}...")
+            status_text.text(f"Processing ({idx+1}/{len(files_to_process)}): {uploaded_file.name}...")
             file_ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
             is_pdf = file_ext == "pdf"
 
@@ -91,31 +95,31 @@ if st.button("开始批量提取并生成报价单"):
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
-                st.success(f"[{file_type_label}] {uploaded_file.name} 提取成功！")
+                st.success(f"[{file_type_label}] {uploaded_file.name} extraction succeeded.")
 
             except Exception as e:
-                st.error(f"{uploaded_file.name} 提取失败: {str(e)}")
+                st.error(f"{uploaded_file.name} extraction failed: {_ascii_safe(e)}")
             finally:
                 if os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
 
             progress_bar.progress((idx + 1) / len(files_to_process))
 
-        status_text.text("所有文件提取完毕！正在写入 Excel...")
+        status_text.text("All files processed. Writing Excel...")
 
         if extracted_results:
             extracted_results.sort(key=lambda data: _natural_sort_key(data.get("_source_filename", "")))
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
                 write_to_template(extracted_results, template_path, output_path)
-                st.success("报价总表生成成功！")
+                st.success("Quote workbook generated successfully.")
 
                 with open(output_path, "rb") as f:
                     st.download_button(
-                        label="点击下载最新生成的报价单总表.xlsx",
+                        label="Download generated quote workbook",
                         data=f,
                         file_name="生成的报价单总表.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
             except Exception as e:
-                st.error(f"写入 Excel 时发生错误: {str(e)}")
+                st.error(f"Excel write failed: {_ascii_safe(e)}")
