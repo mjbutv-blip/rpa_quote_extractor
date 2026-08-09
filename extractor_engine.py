@@ -46,6 +46,19 @@ def _ext_to_mime(ext: str):
 _SIZE_TOKEN_RE = re.compile(r"^(?:\d{2,3}/\d{2,3}|\d{2,3}[A-Z]{1,2}|[A-Z]{1,3})$")
 _BRA_SIZE_RE = re.compile(r"^\d{2,3}[A-Z]{1,2}$")
 _QTY_RE = re.compile(r"^\d+(?:[.,]\d+)?$")
+_FABRIC_LABELS = {
+    "shell fabric": "大身前后片",
+    "lace": "花边",
+    "lining": "内衬",
+    "lining crotch": "底裆内衬",
+    "padding": "胸杯牛奶丝",
+    "padding lining": "胸杯牛奶丝",
+}
+_CONSTRUCTION_LABELS = {
+    "mesh": "网布",
+    "microfibre": "超细纤维",
+    "microfiber": "超细纤维",
+}
 
 
 def _clean_cell(value) -> str:
@@ -79,6 +92,70 @@ def _dedupe_keep_order(values: list) -> list:
 
 def _format_size_range(sizes: list) -> str:
     return ", ".join(_dedupe_keep_order(sizes))
+
+
+def _translate_fabric_text(value: str) -> str:
+    text = _clean_cell(value)
+    replacements = (
+        (r"\bpolyamide\b", "尼龙"),
+        (r"\belastane\b", "氨纶"),
+        (r"\bpolyester\b", "涤纶"),
+        (r"\bcotton\b", "棉"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.I)
+    text = re.sub(r"(\d+(?:[.,]\d+)?%)\s+", r"\1", text)
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _format_fabric_weight(value: str) -> str:
+    text = _clean_cell(value)
+    if not text or text.lower() in {"0 gsm", "0gsm"}:
+        return ""
+    return re.sub(r"\s*GSM\b", "g", text, flags=re.I).strip()
+
+
+def _format_fabric_construction(value: str) -> str:
+    text = _clean_cell(value)
+    return _CONSTRUCTION_LABELS.get(text.lower(), text)
+
+
+def _extract_fabric_rows_from_table(rows: list):
+    if not rows:
+        return None
+    header_idx = None
+    for idx, row in enumerate(rows):
+        header = [_clean_cell(c).lower() for c in row]
+        if "quality" in header and "weight" in header:
+            header_idx = idx
+            break
+    if header_idx is None:
+        return None
+
+    result = []
+    for row in rows[header_idx + 1:]:
+        row_vals = [_clean_cell(c) for c in row]
+        if len(row_vals) < 2:
+            continue
+        raw_part = row_vals[0].lower()
+        part = _FABRIC_LABELS.get(raw_part)
+        quality = _translate_fabric_text(row_vals[1])
+        if not part or not quality:
+            continue
+
+        details = [quality]
+        if len(row_vals) > 2:
+            weight = _format_fabric_weight(row_vals[2])
+            if weight:
+                details.append(weight)
+        if len(row_vals) > 3:
+            construction = _format_fabric_construction(row_vals[3])
+            if construction:
+                details.append(construction)
+        result.append(f"{part}：{', '.join(details)}")
+    return result or None
 
 
 def _extract_sizes_from_total_table(rows: list):
@@ -183,6 +260,35 @@ def extract_size_range_from_pdf(pdf_path: str) -> str:
             sizes = extractor(rows)
             if sizes:
                 return _format_size_range(sizes)
+    return ""
+
+
+def extract_fabric_quality_from_pdf(pdf_path: str) -> str:
+    """从 PDF 第 1 页 Construction/Yarn 表提取报价用面料格式。"""
+    if not _FITZ_AVAILABLE:
+        return ""
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return ""
+
+    try:
+        pages = [doc[0]] if len(doc) else []
+        for page in pages:
+            try:
+                tables = page.find_tables().tables
+            except Exception:
+                tables = []
+            for table in tables:
+                try:
+                    rows = table.extract()
+                except Exception:
+                    continue
+                fabric_rows = _extract_fabric_rows_from_table(rows)
+                if fabric_rows:
+                    return "\n\n".join(fabric_rows)
+    finally:
+        doc.close()
     return ""
 
 def extract_text_from_pdf(pdf_path: str) -> str:

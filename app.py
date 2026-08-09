@@ -6,6 +6,7 @@ import streamlit as st
 
 from extractor_engine import (
     call_claude_to_extract,
+    extract_fabric_quality_from_pdf,
     extract_size_range_from_pdf,
     extract_text_from_excel,
     extract_text_from_pdf,
@@ -35,6 +36,11 @@ def _natural_sort_key(filename: str):
     """按文件名中的数字自然排序，保证批量文件稳定写入顺序。"""
     parts = re.split(r"(\d+)", filename.lower())
     return [int(part) if part.isdigit() else part for part in parts]
+
+
+def _order_id_from_filename(filename: str) -> str:
+    match = re.search(r"\d{7}", filename)
+    return match.group(0) if match else ""
 
 
 if st.button("🚀 开始批量提取并生成报价单"):
@@ -67,6 +73,12 @@ if st.button("🚀 开始批量提取并生成报价单"):
 
                 data = call_claude_to_extract(text, api_key)
                 if is_pdf:
+                    order_id = _order_id_from_filename(uploaded_file.name)
+                    if order_id:
+                        data["order_id"] = order_id
+                    fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
+                    if fabric_quality:
+                        data["fabric_quality"] = fabric_quality
                     size_range = extract_size_range_from_pdf(tmp_file_path)
                     if size_range:
                         data["size_range"] = size_range
