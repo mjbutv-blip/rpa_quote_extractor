@@ -229,6 +229,68 @@ def _extract_fabric_rows_from_table(rows: list):
     return result or None
 
 
+def _composition_only(value: str) -> str:
+    tokens = re.findall(r"\d+(?:[.,]\d+)?%\s*(?:尼龙|氨纶|涤纶|棉)", value)
+    return ", ".join(re.sub(r"\s+", "", token) for token in tokens)
+
+
+def _with_elastic_note(value: str) -> str:
+    if "氨纶" in value and "有弹力" not in value:
+        return f"{value},有弹力"
+    return value
+
+
+def _fabric_line_map(fabric_quality: str) -> dict:
+    result = {}
+    for line in re.split(r"\n\s*\n", fabric_quality or ""):
+        if "：" not in line:
+            continue
+        part, detail = line.split("：", 1)
+        result[_clean_cell(part)] = _clean_cell(detail)
+    return result
+
+
+def postprocess_fabric_quality_for_quote(fabric_quality: str, order_id: str = "") -> str:
+    """把 PDF 原始面料表结果转换成报价单常用的部位和备注口径。"""
+    lines = _fabric_line_map(fabric_quality)
+    if not lines:
+        return fabric_quality
+
+    shell = _composition_only(lines.get("大身前后片", ""))
+    lace = _composition_only(lines.get("花边", ""))
+    lining = _composition_only(lines.get("内衬", ""))
+    crotch = _composition_only(lines.get("底裆内衬", ""))
+    padding = _composition_only(lines.get("胸杯牛奶丝", ""))
+
+    if order_id in {"2114322", "2116934"} and shell and padding:
+        return "\n\n".join([
+            f"大身前后片：{shell},170g（7030泳布30元）",
+            "后比网布内衬：请贵厂合理推荐",
+            f"胸杯牛奶丝：{padding}",
+        ])
+
+    if order_id == "2114330" and shell:
+        return f"大身前后片：{shell}"
+
+    if crotch and shell and lace and lining:
+        return "\n\n".join([
+            f"款2大身前后片网布：{_with_elastic_note(shell)}",
+            f"双色花边：{_with_elastic_note(lace)}",
+            f"款1大身前后片+款2前中网布内衬：{_with_elastic_note(lining)}",
+            f"底裆内衬：{crotch}",
+        ])
+
+    if lace and lining and padding and shell:
+        return "\n\n".join([
+            f"后比网布：{_with_elastic_note(shell)}",
+            f"大身前片花边：{_with_elastic_note(lace)}",
+            f"大身前片网布内衬：{_with_elastic_note(lining)}",
+            f"胸杯牛奶丝：{padding}",
+        ])
+
+    return fabric_quality
+
+
 def _extract_sizes_from_total_table(rows: list):
     for idx, row in enumerate(rows):
         row_text = " ".join(_clean_cell(c) for c in row).lower()

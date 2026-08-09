@@ -10,6 +10,7 @@ from extractor_engine import (
     extract_size_range_from_pdf,
     extract_text_from_excel,
     extract_text_from_pdf,
+    postprocess_fabric_quality_for_quote,
 )
 from excel_writer import write_to_template
 
@@ -109,7 +110,10 @@ if st.button("开始批量提取并生成报价单"):
                     try:
                         fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
                         if fabric_quality:
-                            data["fabric_quality"] = fabric_quality
+                            data["fabric_quality"] = postprocess_fabric_quality_for_quote(
+                                fabric_quality,
+                                data.get("order_id", ""),
+                            )
                     except Exception:
                         pass
                     color_print = _extract_color_print_from_text(text, data.get("fabric_quality", ""))
