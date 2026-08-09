@@ -59,12 +59,14 @@ _CONSTRUCTION_LABELS = {
     "microfibre": "超细纤维",
     "microfiber": "超细纤维",
 }
-
-
 def _clean_cell(value) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _ascii_key(value: str) -> str:
+    return re.sub(r"[^a-z]", "", _clean_cell(value).lower())
 
 
 def _size_tokens_from_cells(cells) -> list:
@@ -110,6 +112,57 @@ def _translate_fabric_text(value: str) -> str:
     return text.strip()
 
 
+def _collapse_duplicated_percent_digits(digits: str) -> str:
+    if len(digits) >= 4 and len(digits) % 2 == 0:
+        pairs = [digits[i:i + 2] for i in range(0, len(digits), 2)]
+        if all(len(pair) == 2 and pair[0] == pair[1] for pair in pairs):
+            return "".join(pair[0] for pair in pairs)
+    return digits
+
+
+def _extract_percentages(value: str) -> list:
+    text = _clean_cell(value)
+    text = re.sub(r"(\d)\s+(?=\d)", r"\1", text)
+    percentages = []
+    for match in re.finditer(r"(\d[\d\s]*)\s*%+", text):
+        digits = re.sub(r"\D", "", match.group(1))
+        digits = _collapse_duplicated_percent_digits(digits)
+        if digits:
+            percentages.append(f"{digits}%")
+    return percentages
+
+
+def _extract_material_names(value: str) -> list:
+    text = _clean_cell(value).lower()
+    ascii_text = _ascii_key(text)
+    chinese_text = re.sub(r"[A-Za-z\s,，%0-9.]+", "", text)
+    found = []
+    if "polyamide" in ascii_text or any(keyword in chinese_text for keyword in ("聚酰胺", "锦纶", "尼龙")):
+        found.append("尼龙")
+    if "elastane" in ascii_text or any(keyword in chinese_text for keyword in ("弹性纤维", "氨纶")):
+        found.append("氨纶")
+    if "polyester" in ascii_text or any(keyword in chinese_text for keyword in ("聚酯纤维", "涤纶")):
+        found.append("涤纶")
+    if "cotton" in ascii_text or "棉" in chinese_text:
+        found.append("棉")
+    return found
+
+
+def _rebuild_fabric_quality(value: str) -> str:
+    percentages = _extract_percentages(value)
+    materials = _extract_material_names(value)
+    if percentages and materials and len(percentages) == len(materials):
+        numeric = [int(pct.rstrip("%")) for pct in percentages]
+        if 0 in numeric and len(numeric) > 1:
+            zero_count = numeric.count(0)
+            remainder = 100 - sum(n for n in numeric if n)
+            if zero_count == 1 and remainder > 0:
+                numeric[numeric.index(0)] = remainder
+                percentages = [f"{num}%" for num in numeric]
+        return ", ".join(f"{pct}{mat}" for pct, mat in zip(percentages, materials))
+    return _translate_fabric_text(value)
+
+
 def _format_fabric_weight(value: str) -> str:
     text = _clean_cell(value)
     if not text or text.lower() in {"0 gsm", "0gsm"}:
@@ -119,6 +172,13 @@ def _format_fabric_weight(value: str) -> str:
 
 def _format_fabric_construction(value: str) -> str:
     text = _clean_cell(value)
+    if text.lower() in {"0 gsm", "0gsm"}:
+        return ""
+    key = _ascii_key(text)
+    if "mesh" in key:
+        return "网布"
+    if "microfibre" in key or "microfiber" in key:
+        return "超细纤维"
     return _CONSTRUCTION_LABELS.get(text.lower(), text)
 
 
@@ -127,8 +187,8 @@ def _extract_fabric_rows_from_table(rows: list):
         return None
     header_idx = None
     for idx, row in enumerate(rows):
-        header = [_clean_cell(c).lower() for c in row]
-        if "quality" in header and "weight" in header:
+        header = [_ascii_key(c) for c in row]
+        if any("quality" in cell for cell in header) and any("weight" in cell for cell in header):
             header_idx = idx
             break
     if header_idx is None:
@@ -139,9 +199,20 @@ def _extract_fabric_rows_from_table(rows: list):
         row_vals = [_clean_cell(c) for c in row]
         if len(row_vals) < 2:
             continue
-        raw_part = row_vals[0].lower()
-        part = _FABRIC_LABELS.get(raw_part)
-        quality = _translate_fabric_text(row_vals[1])
+        raw_part = _ascii_key(row_vals[0])
+        if "shellfabric" in raw_part:
+            part = "大身前后片"
+        elif raw_part == "lace":
+            part = "花边"
+        elif raw_part == "liningcrotch":
+            part = "底裆内衬"
+        elif raw_part == "lining":
+            part = "内衬"
+        elif raw_part in {"padding", "paddinglining"}:
+            part = "胸杯牛奶丝"
+        else:
+            part = _FABRIC_LABELS.get(row_vals[0].lower())
+        quality = _rebuild_fabric_quality(row_vals[1])
         if not part or not quality:
             continue
 
@@ -286,10 +357,7 @@ def extract_fabric_quality_from_pdf(pdf_path: str) -> str:
                     continue
                 fabric_rows = _extract_fabric_rows_from_table(rows)
                 if fabric_rows:
-                    result = "\n\n".join(fabric_rows)
-                    if re.search(r"[A-Za-z]{2,}", result):
-                        return ""
-                    return result
+                    return "\n\n".join(fabric_rows)
     finally:
         doc.close()
     return ""
