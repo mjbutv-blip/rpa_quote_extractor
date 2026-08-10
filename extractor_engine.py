@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 
 import openpyxl
-from anthropic import Anthropic
+from openai import OpenAI
 
 try:
     import fitz  # PyMuPDF
@@ -28,7 +28,7 @@ try:
 except ImportError:
     _PIL_AVAILABLE = False
 
-# MIME types supported by the Anthropic vision API
+# MIME types supported by the vision API
 _SUPPORTED_EXTS = {"jpeg", "jpg", "png", "gif", "webp"}
 
 
@@ -519,7 +519,7 @@ def extract_image_base64(pdf_path: str, max_pages: int = 3):
 # ── Excel 相关 ────────────────────────────────────────────────────────────────
 
 def extract_text_from_excel(excel_path: str) -> str:
-    """将 Excel 工艺单所有 sheet 的单元格内容转为纯文本，供 Claude 提取字段。"""
+    """将 Excel 工艺单所有 sheet 的单元格内容转为纯文本，供 AI 提取字段。"""
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     lines = []
     for sheet_name in wb.sheetnames:
@@ -725,7 +725,7 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
         return image_path
 
 
-# ── Claude 提取 ───────────────────────────────────────────────────────────────
+# ── AI 提取 ───────────────────────────────────────────────────────────────────
 
 # 同一份工艺单（文本+图片完全一致）的提取结果落盘缓存，避免重复调用 AI 时
 # 因模型输出的微小随机性导致同一文件两次提取结果不一致。
@@ -734,6 +734,7 @@ _CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".extract
 
 def _cache_key(text: str, images: list) -> str:
     h = hashlib.sha256()
+    h.update(os.environ.get("OPENAI_MODEL", "gpt-4.1").encode("utf-8"))
     h.update(text.encode("utf-8"))
     if images:
         for b64, mime in images:
@@ -760,15 +761,15 @@ def _save_cache(cache: dict) -> None:
         pass
 
 
-def call_claude_to_extract(
+def call_openai_to_extract(
     text: str,
     api_key: str,
     images: list = None,
 ) -> dict:
-    """调用 Claude 从工艺单文本（+ 可选多张图片）中提取结构化字段。
+    """调用 OpenAI 从工艺单文本（+ 可选多张图片）中提取结构化字段。
 
     images: [(base64_str, media_type), ...] 或 None。
-    可传入多张图片（款式图、面料色卡等），Claude 会综合所有图片提取信息。
+    可传入多张图片（款式图、面料色卡等），模型会综合所有图片提取信息。
 
     同一份文件（文本+图片内容完全一致）会直接复用缓存结果，保证重复提取时
     100% 输出一致；文件内容变化（哪怕一个字）会被当作新文件重新调用 AI。
@@ -778,7 +779,7 @@ def call_claude_to_extract(
     if key in cache:
         return dict(cache[key])
 
-    client = Anthropic(api_key=api_key)
+    client = OpenAI(api_key=api_key)
 
     system_prompt = (
         "You are an expert data extractor for apparel tech packs. "
@@ -836,23 +837,22 @@ def call_claude_to_extract(
     if images:
         for b64, mime in images:
             user_content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": mime, "data": b64},
+                "type": "input_image",
+                "image_url": f"data:{mime};base64,{b64}",
             })
     user_content.append({
-        "type": "text",
+        "type": "input_text",
         "text": f"Extract data from this tech pack. Text content:\n\n{text}",
     })
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        temperature=0,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_content}],
+    response = client.responses.create(
+        model=os.environ.get("OPENAI_MODEL", "gpt-4.1"),
+        instructions=system_prompt,
+        input=[{"role": "user", "content": user_content}],
+        max_output_tokens=1000,
     )
 
-    res_text = response.content[0].text.strip()
+    res_text = response.output_text.strip()
     if res_text.startswith("```json"):
         res_text = res_text.split("```json")[1].split("```")[0].strip()
     elif res_text.startswith("```"):

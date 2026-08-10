@@ -5,7 +5,7 @@ import tempfile
 import streamlit as st
 
 from extractor_engine import (
-    call_claude_to_extract,
+    call_openai_to_extract,
     extract_fabric_quality_from_pdf,
     extract_size_range_from_pdf,
     extract_text_from_excel,
@@ -20,9 +20,9 @@ st.title("服装工艺单 PDF / Excel 自动化提取与 RPA 填表系统")
 st.write("上传多款产品的工艺单（PDF 或 Excel），AI 将自动提取核心字段并填入报价单总表模板中。")
 
 api_key = st.sidebar.text_input(
-    "输入 Anthropic API Key",
+    "输入 OpenAI API Key",
     type="password",
-    value=os.environ.get("ANTHROPIC_API_KEY", ""),
+    value=os.environ.get("OPENAI_API_KEY", ""),
 )
 
 uploaded_files = st.file_uploader(
@@ -76,7 +76,7 @@ def _extract_color_print_from_text(text: str, fabric_quality: str = "") -> str:
 
 if st.button("开始批量提取并生成报价单"):
     if not api_key:
-        st.error("Please enter your Anthropic API Key.")
+        st.error("Please enter your OpenAI API Key.")
     elif not uploaded_files:
         st.warning("Please upload at least one file.")
     elif not os.path.exists(template_path):
@@ -102,7 +102,7 @@ if st.button("开始批量提取并生成报价单"):
                 else:
                     text = extract_text_from_excel(tmp_file_path)
 
-                data = call_claude_to_extract(text, api_key)
+                data = call_openai_to_extract(text, api_key)
                 if is_pdf:
                     order_id = _order_id_from_filename(uploaded_file.name)
                     if order_id:
