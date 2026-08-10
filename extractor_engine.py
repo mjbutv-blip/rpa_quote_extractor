@@ -730,11 +730,12 @@ def crop_garment_region(image_path: str, api_key: str = None) -> str:
 # 同一份工艺单（文本+图片完全一致）的提取结果落盘缓存，避免重复调用 AI 时
 # 因模型输出的微小随机性导致同一文件两次提取结果不一致。
 _CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".extraction_cache.json")
+_DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
 
 
 def _cache_key(text: str, images: list) -> str:
     h = hashlib.sha256()
-    h.update(os.environ.get("OPENAI_MODEL", "gpt-4.1").encode("utf-8"))
+    h.update(os.environ.get("OPENAI_MODEL", _DEFAULT_OPENAI_MODEL).encode("utf-8"))
     h.update(text.encode("utf-8"))
     if images:
         for b64, mime in images:
@@ -846,7 +847,7 @@ def call_openai_to_extract(
     })
 
     response = client.responses.create(
-        model=os.environ.get("OPENAI_MODEL", "gpt-4.1"),
+        model=os.environ.get("OPENAI_MODEL", _DEFAULT_OPENAI_MODEL),
         instructions=system_prompt,
         input=[{"role": "user", "content": user_content}],
         max_output_tokens=1000,
