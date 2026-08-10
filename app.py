@@ -10,6 +10,7 @@ from extractor_engine import (
     extract_size_range_from_pdf,
     extract_text_from_excel,
     extract_text_from_pdf,
+    normalize_product_name_for_quote,
     postprocess_fabric_quality_for_quote,
 )
 from excel_writer import write_to_template
@@ -107,6 +108,9 @@ if st.button("开始批量提取并生成报价单"):
                     order_id = _order_id_from_filename(uploaded_file.name)
                     if order_id:
                         data["order_id"] = order_id
+                    product_name = normalize_product_name_for_quote(text, data.get("product_name", ""))
+                    if product_name:
+                        data["product_name"] = product_name
                     try:
                         fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
                         if fabric_quality:

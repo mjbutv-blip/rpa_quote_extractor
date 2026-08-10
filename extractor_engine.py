@@ -291,6 +291,44 @@ def postprocess_fabric_quality_for_quote(fabric_quality: str, order_id: str = ""
     return fabric_quality
 
 
+def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> str:
+    """根据工艺单客观款式特征生成报价单品名。"""
+    source = f"{raw_product_name}\n{text or ''}".lower()
+    compact = _ascii_key(source)
+
+    if any(keyword in compact for keyword in (
+        "brazilianbrief",
+        "brazilbrief",
+        "briefs",
+        "hipster",
+        "panty",
+        "slip",
+    )) or any(keyword in source for keyword in ("三角裤", "内裤")):
+        return "女士三角裤"
+
+    if any(keyword in compact for keyword in (
+        "brawithwire",
+        "withwire",
+        "wiredbra",
+        "paddedcupwithwire",
+        "pushupbra",
+        "demibra",
+        "tshirtpaddedcup",
+    )) or any(keyword in source for keyword in ("有钢圈文胸", "带钢圈", "聚拢文胸")):
+        return "女士固定杯文胸"
+
+    if any(keyword in compact for keyword in (
+        "brawowire",
+        "brawithoutwire",
+        "bustier",
+        "bralette",
+        "softbra",
+    )) or any(keyword in source for keyword in ("无钢圈文胸", "软杯文胸", "抹胸", "束胸")):
+        return "女士贴合塞杯文胸"
+
+    return raw_product_name or ""
+
+
 def _extract_sizes_from_total_table(rows: list):
     for idx, row in enumerate(rows):
         row_text = " ".join(_clean_cell(c) for c in row).lower()
