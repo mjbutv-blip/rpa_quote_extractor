@@ -31,12 +31,63 @@ uploaded_files = st.file_uploader(
     type=["pdf", "xlsx", "xls"],
     accept_multiple_files=True,
 )
+sort_mode = st.selectbox(
+    "输出排序方式",
+    ["按上传顺序", "按文件名/订单号自动排序", "手动指定顺序"],
+)
+custom_order_text = ""
+if sort_mode == "手动指定顺序":
+    custom_order_text = st.text_area(
+        "手动顺序（按顺序输入订单号或文件名片段，每行一个，也可用逗号分隔）",
+        placeholder="2114315\n2114322\n2114330",
+        height=100,
+    )
 template_path = "templates/报价单总表模板.xlsx"
+
+
+def _natural_sort_key(filename: str):
+    parts = re.split(r"(\d+)", filename.lower())
+    return [int(part) if part.isdigit() else part for part in parts]
 
 
 def _order_id_from_filename(filename: str) -> str:
     match = re.search(r"\d{7}", filename)
     return match.group(0) if match else ""
+
+
+def _parse_custom_order(value: str):
+    return [item.strip().lower() for item in re.split(r"[\n,，;；]+", value or "") if item.strip()]
+
+
+def _custom_order_rank(custom_order, order_id: str = "", filename: str = ""):
+    haystacks = [str(order_id or "").lower(), str(filename or "").lower()]
+    for idx, token in enumerate(custom_order):
+        if any(token == haystack or token in haystack for haystack in haystacks):
+            return idx
+    return len(custom_order)
+
+
+def _file_sort_key(file, sort_mode: str, custom_order):
+    if sort_mode == "按文件名/订单号自动排序":
+        return _natural_sort_key(file.name)
+    if sort_mode == "手动指定顺序":
+        return (
+            _custom_order_rank(custom_order, _order_id_from_filename(file.name), file.name),
+            _natural_sort_key(file.name),
+        )
+    return 0
+
+
+def _result_sort_key(data, sort_mode: str, custom_order):
+    filename = data.get("_source_filename", "")
+    if sort_mode == "按文件名/订单号自动排序":
+        return _natural_sort_key(filename)
+    if sort_mode == "手动指定顺序":
+        return (
+            _custom_order_rank(custom_order, data.get("order_id", ""), filename),
+            _natural_sort_key(filename),
+        )
+    return 0
 
 
 def _ascii_safe(value) -> str:
@@ -80,7 +131,11 @@ if st.button("开始批量提取并生成报价单"):
         extracted_results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
-        files_to_process = list(uploaded_files)
+        custom_order = _parse_custom_order(custom_order_text)
+        files_to_process = sorted(
+            list(uploaded_files),
+            key=lambda file: _file_sort_key(file, sort_mode, custom_order),
+        )
 
         for idx, uploaded_file in enumerate(files_to_process):
             status_text.text(f"Processing ({idx+1}/{len(files_to_process)}): {uploaded_file.name}...")
@@ -139,6 +194,7 @@ if st.button("开始批量提取并生成报价单"):
         status_text.text("All files processed. Writing Excel...")
 
         if extracted_results:
+            extracted_results.sort(key=lambda data: _result_sort_key(data, sort_mode, custom_order))
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
                 write_to_template(extracted_results, template_path, output_path)
