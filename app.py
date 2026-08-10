@@ -3,6 +3,10 @@ import re
 import tempfile
 
 import streamlit as st
+try:
+    from streamlit_sortables import sort_items
+except ImportError:
+    sort_items = None
 
 from extractor_engine import (
     call_openai_to_extract,
@@ -33,8 +37,16 @@ uploaded_files = st.file_uploader(
 )
 sort_mode = st.selectbox(
     "输出排序方式",
-    ["按上传顺序", "按文件名/订单号自动排序", "手动指定顺序"],
+    ["拖动排序", "按上传顺序", "按文件名/订单号自动排序", "手动指定顺序"],
 )
+dragged_order = []
+if sort_mode == "拖动排序" and uploaded_files:
+    if sort_items is None:
+        st.warning("拖动排序组件未安装，当前会按上传顺序生成。")
+    else:
+        labels = [f"{idx + 1}. {file.name}" for idx, file in enumerate(uploaded_files)]
+        dragged_order = sort_items(labels)
+
 custom_order_text = ""
 if sort_mode == "手动指定顺序":
     custom_order_text = st.text_area(
@@ -67,7 +79,23 @@ def _custom_order_rank(custom_order, order_id: str = "", filename: str = ""):
     return len(custom_order)
 
 
-def _file_sort_key(file, sort_mode: str, custom_order):
+def _drag_order_from_labels(labels):
+    result = []
+    for label in labels or []:
+        filename = re.sub(r"^\d+\.\s*", "", label).strip()
+        if filename:
+            result.append(filename.lower())
+    return result
+
+
+def _file_sort_key(file, sort_mode: str, custom_order, drag_order):
+    if sort_mode == "拖动排序":
+        if not drag_order:
+            return 0
+        return (
+            _custom_order_rank(drag_order, _order_id_from_filename(file.name), file.name),
+            _natural_sort_key(file.name),
+        )
     if sort_mode == "按文件名/订单号自动排序":
         return _natural_sort_key(file.name)
     if sort_mode == "手动指定顺序":
@@ -78,8 +106,15 @@ def _file_sort_key(file, sort_mode: str, custom_order):
     return 0
 
 
-def _result_sort_key(data, sort_mode: str, custom_order):
+def _result_sort_key(data, sort_mode: str, custom_order, drag_order):
     filename = data.get("_source_filename", "")
+    if sort_mode == "拖动排序":
+        if not drag_order:
+            return 0
+        return (
+            _custom_order_rank(drag_order, data.get("order_id", ""), filename),
+            _natural_sort_key(filename),
+        )
     if sort_mode == "按文件名/订单号自动排序":
         return _natural_sort_key(filename)
     if sort_mode == "手动指定顺序":
@@ -132,9 +167,10 @@ if st.button("开始批量提取并生成报价单"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         custom_order = _parse_custom_order(custom_order_text)
+        drag_order = _drag_order_from_labels(dragged_order)
         files_to_process = sorted(
             list(uploaded_files),
-            key=lambda file: _file_sort_key(file, sort_mode, custom_order),
+            key=lambda file: _file_sort_key(file, sort_mode, custom_order, drag_order),
         )
 
         for idx, uploaded_file in enumerate(files_to_process):
@@ -194,7 +230,7 @@ if st.button("开始批量提取并生成报价单"):
         status_text.text("All files processed. Writing Excel...")
 
         if extracted_results:
-            extracted_results.sort(key=lambda data: _result_sort_key(data, sort_mode, custom_order))
+            extracted_results.sort(key=lambda data: _result_sort_key(data, sort_mode, custom_order, drag_order))
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
                 write_to_template(extracted_results, template_path, output_path)
