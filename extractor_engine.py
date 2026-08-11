@@ -295,6 +295,58 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
     """根据工艺单客观款式特征生成报价单品名。"""
     source = f"{raw_product_name}\n{text or ''}".lower()
     compact = _ascii_key(source)
+    is_teener = any(keyword in compact for keyword in ("teener", "teen", "girls", "girl")) or "女童" in source
+    is_kids = is_teener or any(keyword in compact for keyword in ("kids", "children", "child", "junior")) or any(
+        keyword in source for keyword in ("童", "儿童")
+    )
+
+    if any(keyword in compact for keyword in ("boysswimtrunks", "boysswimshorts", "swimtrunks", "swimshorts")) or any(
+        keyword in source for keyword in ("男童沙滩裤", "泳裤", "沙滩裤")
+    ):
+        return "男童沙滩裤"
+
+    if is_kids and ("bikiniset" in compact or "bikini set" in source or "比基尼套装" in source):
+        return "女童不带杯比基尼套装"
+
+    if is_kids and (any(keyword in compact for keyword in ("girlsswimsuit", "swimsuit")) or any(keyword in source for keyword in ("连体泳装", "泳衣"))):
+        return "女童不带杯连体泳装"
+
+    if any(keyword in compact for keyword in ("radler", "cyclingshort", "shapingpants", "shapewear")) or any(
+        keyword in source for keyword in ("塑身裤", "骑行裤")
+    ):
+        return "女士塑身裤"
+
+    if any(keyword in compact for keyword in ("string", "thong", "tanga")) or any(keyword in source for keyword in ("丁字裤",)):
+        return "女士贴合丁字裤"
+
+    if any(keyword in compact for keyword in ("camisole", "cami", "vesttop", "tanktop")) or any(
+        keyword in source for keyword in ("背心", "吊带")
+    ):
+        if any(keyword in compact for keyword in ("padding", "padded", "cup")) or any(keyword in source for keyword in ("胸杯", "罩杯", "衬垫")):
+            return "女士固定杯背心"
+
+    if is_teener and any(keyword in compact for keyword in ("bustier", "bralette", "sportbra", "sportsbra")):
+        return "大女童运动文胸"
+
+    if is_teener and any(keyword in compact for keyword in ("softbh", "softbra", "brawithwire", "bra", "paddedcup")):
+        return "大女童固定杯文胸"
+
+    if is_teener and any(keyword in compact for keyword in ("boxer", "shorty", "shorts", "neonwaistband")):
+        return "大女童女士平角裤"
+
+    if any(keyword in compact for keyword in ("seamless", "zerofeel")) or any(keyword in source for keyword in ("无缝", "贴合")):
+        if any(keyword in compact for keyword in ("softbra", "bra", "bustier", "bralette")) or any(keyword in source for keyword in ("文胸", "内衣")):
+            return "女士塞杯无缝内衣"
+
+    if "soft bustier #3" in source or any(keyword in compact for keyword in ("threeside", "threesides", "sideswrap", "reversewrap")) or any(
+        keyword in source for keyword in ("三面反包",)
+    ):
+        return "女士固定杯文胸-三面反包"
+
+    if any(keyword in compact for keyword in ("halfwire", "halfcup", "halfbra", "halfpiece")) or any(
+        keyword in source for keyword in ("半件围",)
+    ):
+        return "女士固定杯贴合文胸-半件围"
 
     if any(keyword in compact for keyword in (
         "brazilianbrief",
@@ -303,10 +355,13 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
         "hipster",
         "panty",
         "slip",
+        "boxer",
+        "shorty",
     )) or any(keyword in source for keyword in ("三角裤", "内裤")):
         return "女士三角裤"
 
     if any(keyword in compact for keyword in (
+        "alinaglitter",
         "brawithwire",
         "withwire",
         "wiredbra",
