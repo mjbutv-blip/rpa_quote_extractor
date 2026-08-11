@@ -2,6 +2,12 @@ import os
 import openpyxl
 
 
+BRA_MOLD_NOTE = (
+    "价格中需要含一套正确模具费用，下单后，如果是由于客人原因更改模具，"
+    "费用由我司支付，如果是由于贵厂的原因，导致重新开模具，费用由贵厂承担，请悉知"
+)
+
+
 def _to_plain_text(value) -> str:
     """写入单元格前的兜底拍平：防止上游意外返回 tuple/list/嵌套 dict 时把结构体写入 Excel。"""
     if value is None:
@@ -11,6 +17,11 @@ def _to_plain_text(value) -> str:
     if isinstance(value, dict):
         value = value.get("translated") or value.get("text") or value.get("value") or value.get("original") or ""
     return str(value).strip()
+
+
+def _needs_bra_mold_note(product_name: str) -> bool:
+    product_name = _to_plain_text(product_name)
+    return any(keyword in product_name for keyword in ("文胸", "塞杯无缝内衣", "固定杯背心"))
 
 
 def write_to_template(data_list, template_path, output_path):
@@ -31,6 +42,8 @@ def write_to_template(data_list, template_path, output_path):
         ws.cell(row=start_row, column=10, value=_to_plain_text(data.get("fabric_quality", "")))
         ws.cell(row=start_row, column=11, value=_to_plain_text(data.get("color_print", "")))
         ws.cell(row=start_row, column=14, value=_to_plain_text(data.get("size_range", "")))
+        if _needs_bra_mold_note(data.get("product_name", "")):
+            ws.cell(row=start_row, column=17, value=BRA_MOLD_NOTE)
 
         start_row += 1
 
