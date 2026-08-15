@@ -6,6 +6,13 @@ BRA_MOLD_NOTE = (
     "价格中需要含一套正确模具费用，下单后，如果是由于客人原因更改模具，"
     "费用由我司支付，如果是由于贵厂的原因，导致重新开模具，费用由贵厂承担，请悉知"
 )
+SAMPLE_QUANTITY_NOTE = (
+    "NKD-苏州文胸+女士三角裤和女士+男士+童装泳装订单\n"
+    "尺寸版\t指定码数各3件/套\n"
+    "产前样\t指定码数齐款各4件/套\n"
+    "照相版\t指定码数齐款各3件/套\n"
+    "船头样\t齐款齐码各2件/套"
+)
 
 
 def _to_plain_text(value) -> str:
@@ -41,6 +48,7 @@ def write_to_template(data_list, template_path, output_path):
         ws.cell(row=start_row, column=6,  value=_to_plain_text(data.get("product_name", "")))
         ws.cell(row=start_row, column=10, value=_to_plain_text(data.get("fabric_quality", "")))
         ws.cell(row=start_row, column=11, value=_to_plain_text(data.get("color_print", "")))
+        ws.cell(row=start_row, column=13, value=SAMPLE_QUANTITY_NOTE)
         ws.cell(row=start_row, column=14, value=_to_plain_text(data.get("size_range", "")))
         if _needs_bra_mold_note(data.get("product_name", "")):
             ws.cell(row=start_row, column=17, value=BRA_MOLD_NOTE)
