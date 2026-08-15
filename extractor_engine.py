@@ -240,6 +240,10 @@ def _with_elastic_note(value: str) -> str:
     return value
 
 
+def _contains_any_phrase(text: str, phrases: tuple) -> bool:
+    return any(re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", text) for phrase in phrases)
+
+
 def _fabric_line_map(fabric_quality: str) -> dict:
     result = {}
     for line in re.split(r"\n\s*\n", fabric_quality or ""):
@@ -319,6 +323,18 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
     if any(keyword in compact for keyword in ("string", "thong", "tanga")) or any(keyword in source for keyword in ("丁字裤",)):
         return "女士贴合丁字裤"
 
+    if any(keyword in compact for keyword in (
+        "brazilianbrief",
+        "brazilbrief",
+        "briefs",
+        "hipster",
+        "panty",
+        "slip",
+        "boxer",
+        "shorty",
+    )) or any(keyword in source for keyword in ("三角裤", "内裤")):
+        return "女士三角裤"
+
     if any(keyword in compact for keyword in ("camisole", "cami", "vesttop", "tanktop")) or any(
         keyword in source for keyword in ("背心", "吊带")
     ):
@@ -334,7 +350,7 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
     if is_teener and any(keyword in compact for keyword in ("boxer", "shorty", "shorts", "neonwaistband")):
         return "大女童女士平角裤"
 
-    if any(keyword in compact for keyword in ("seamless", "zerofeel")) or any(keyword in source for keyword in ("无缝", "贴合")):
+    if _contains_any_phrase(source, ("seamless", "zero feel", "zero-feel", "seam free", "no seam")) or any(keyword in source for keyword in ("无缝", "贴合")):
         if any(keyword in compact for keyword in ("softbra", "bra", "bustier", "bralette")) or any(keyword in source for keyword in ("文胸", "内衣")):
             return "女士塞杯无缝内衣"
 
@@ -347,18 +363,6 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
         keyword in source for keyword in ("半件围",)
     ):
         return "女士固定杯贴合文胸-半件围"
-
-    if any(keyword in compact for keyword in (
-        "brazilianbrief",
-        "brazilbrief",
-        "briefs",
-        "hipster",
-        "panty",
-        "slip",
-        "boxer",
-        "shorty",
-    )) or any(keyword in source for keyword in ("三角裤", "内裤")):
-        return "女士三角裤"
 
     if any(keyword in compact for keyword in (
         "alinaglitter",
