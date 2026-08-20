@@ -135,9 +135,40 @@ def _extract_color_print_from_text(text: str, fabric_quality: str = "") -> str:
     is_multicoloured = "multicoloured" in text_l or "multi coloured" in text_l
     has_lace = "花边" in fabric
     has_logo_print = "logo" in text_l and ("rubber print" in text_l or "橡胶" in text)
+    has_body_print = any(keyword in text_l for keyword in (
+        "all over print",
+        "aop",
+        "print",
+        "printed",
+        "pattern",
+        "floral",
+        "flower",
+        "stripe",
+        "striped",
+        "check",
+        "checked",
+        "plaid",
+        "dot",
+        "dotted",
+        "animal print",
+        "graphic",
+    )) or any(keyword in text for keyword in (
+        "印花",
+        "花型",
+        "花版",
+        "满印",
+        "图案",
+        "条纹",
+        "格子",
+        "波点",
+        "碎花",
+        "花朵",
+    ))
 
     if is_multicoloured and has_lace:
         lines = ["大身前后片:双色花边", "其他材料:黑色配色"]
+    elif has_body_print and not has_logo_print:
+        lines = ["大身前后片:印花"]
     elif is_multicoloured:
         lines = ["大身前后片:净色", "其他材料:配色"]
     else:
