@@ -31,7 +31,13 @@ def _needs_bra_mold_note(product_name: str) -> bool:
     return any(keyword in product_name for keyword in ("文胸", "固定杯", "塞杯"))
 
 
-def write_to_template(data_list, template_path, output_path, sample_quantity_default: str = SAMPLE_QUANTITY_NOTE):
+def write_to_template(
+    data_list,
+    template_path,
+    output_path,
+    sample_quantity_default: str = SAMPLE_QUANTITY_NOTE,
+    quote_title: str = "",
+):
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"找不到模板文件: {template_path}")
 
@@ -41,6 +47,8 @@ def write_to_template(data_list, template_path, output_path, sample_quantity_def
         raise ValueError(f"模板中未找到以'总表'开头的工作表，当前 Sheet 列表: {wb.sheetnames}")
 
     ws = wb[target_sheet]
+    if quote_title:
+        ws.cell(row=2, column=1, value=quote_title)
     start_row = 5
 
     for data in data_list:

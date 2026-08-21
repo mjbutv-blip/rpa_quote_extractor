@@ -35,11 +35,12 @@ api_key = st.sidebar.text_input(
 
 customer_id = st.selectbox(
     "选择客户",
-    ["default", "NKD", "EL"],
+    ["default", "NKD", "EL", "TK"],
     format_func=lambda value: {
         "default": "默认客户",
         "NKD": "NKD",
         "EL": "EL",
+        "TK": "TK",
     }.get(value, value),
 )
 template_options = available_template_options(customer_id)
@@ -51,7 +52,11 @@ selected_template_index = st.selectbox(
 selected_customer_template = template_options[selected_template_index]
 template_path = selected_customer_template["template_path"]
 sample_quantity_default = selected_customer_template.get("sample_quantity_default", "")
-st.caption(f"样品数量默认值：{'NKD 默认话术' if sample_quantity_default else '留空'}")
+quote_title = "" if customer_id == "default" else f"{customer_id}-报价单"
+st.caption(
+    f"报价单表头：{quote_title or '使用模板原表头'}；"
+    f"样品数量默认值：{'NKD 默认话术' if sample_quantity_default else '留空'}"
+)
 
 uploaded_files = st.file_uploader(
     "选择工艺单文件 (可多选，支持 PDF / Excel)",
@@ -327,6 +332,7 @@ if st.button("开始批量提取并生成报价单"):
                     template_path,
                     output_path,
                     sample_quantity_default=sample_quantity_default,
+                    quote_title=quote_title,
                 )
                 for row in st.session_state["quote_task_rows"]:
                     if row["状态"] == "报价提取完成":
