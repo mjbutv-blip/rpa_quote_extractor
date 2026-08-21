@@ -20,6 +20,7 @@ from extractor_engine import (
     postprocess_fabric_quality_for_quote,
 )
 from customer_templates import available_template_options
+from el_quote_rules import apply_el_quote_rules
 from excel_writer import write_to_template
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
@@ -304,6 +305,8 @@ if st.button("开始批量提取并生成报价单"):
                             data["size_range"] = size_range
                     except Exception:
                         pass
+                if customer_id == "EL":
+                    data = apply_el_quote_rules(text, data)
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
