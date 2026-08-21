@@ -28,7 +28,7 @@ def _to_plain_text(value) -> str:
 
 def _needs_bra_mold_note(product_name: str) -> bool:
     product_name = _to_plain_text(product_name)
-    return any(keyword in product_name for keyword in ("文胸", "塞杯无缝内衣", "固定杯背心"))
+    return any(keyword in product_name for keyword in ("文胸", "固定杯", "塞杯"))
 
 
 def write_to_template(data_list, template_path, output_path, sample_quantity_default: str = SAMPLE_QUANTITY_NOTE):
