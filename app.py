@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+import uuid
 
 import streamlit as st
 try:
@@ -75,6 +76,23 @@ if sort_mode == "手动指定顺序":
         placeholder="2114315\n2114322\n2114330",
         height=100,
     )
+
+
+def _new_task_id() -> str:
+    return f"TASK-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _render_task_rows(container, rows):
+    with container.container():
+        st.subheader("后台任务")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
+if st.session_state.get("quote_task_rows"):
+    tasks_panel = st.empty()
+    _render_task_rows(tasks_panel, st.session_state["quote_task_rows"])
+
+
 def _natural_sort_key(filename: str):
     parts = re.split(r"(\d+)", filename.lower())
     return [int(part) if part.isdigit() else part for part in parts]
@@ -221,9 +239,24 @@ if st.button("开始批量提取并生成报价单"):
             list(uploaded_files),
             key=lambda file: _file_sort_key(file, sort_mode, custom_order, drag_order),
         )
+        st.session_state["quote_task_rows"] = [
+            {
+                "任务ID": _new_task_id(),
+                "文件名": file.name,
+                "客户": customer_id,
+                "模板": selected_customer_template["customer_name"],
+                "状态": "等待中",
+                "错误": "",
+            }
+            for file in files_to_process
+        ]
+        tasks_panel = st.empty()
+        _render_task_rows(tasks_panel, st.session_state["quote_task_rows"])
 
         for idx, uploaded_file in enumerate(files_to_process):
             status_text.text(f"Processing ({idx+1}/{len(files_to_process)}): {uploaded_file.name}...")
+            st.session_state["quote_task_rows"][idx]["状态"] = "处理中"
+            _render_task_rows(tasks_panel, st.session_state["quote_task_rows"])
             file_ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
             is_pdf = file_ext == "pdf"
 
@@ -266,14 +299,18 @@ if st.button("开始批量提取并生成报价单"):
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"
+                st.session_state["quote_task_rows"][idx]["状态"] = "报价提取完成"
                 st.success(f"[{file_type_label}] {uploaded_file.name} extraction succeeded.")
 
             except Exception as e:
+                st.session_state["quote_task_rows"][idx]["状态"] = "失败"
+                st.session_state["quote_task_rows"][idx]["错误"] = _ascii_safe(e)
                 st.error(f"{uploaded_file.name} extraction failed: {_ascii_safe(e)}")
             finally:
                 if os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
 
+            _render_task_rows(tasks_panel, st.session_state["quote_task_rows"])
             progress_bar.progress((idx + 1) / len(files_to_process))
 
         status_text.text("All files processed. Writing Excel...")
@@ -288,6 +325,10 @@ if st.button("开始批量提取并生成报价单"):
                     output_path,
                     sample_quantity_default=sample_quantity_default,
                 )
+                for row in st.session_state["quote_task_rows"]:
+                    if row["状态"] == "报价提取完成":
+                        row["状态"] = "报价单已生成"
+                _render_task_rows(tasks_panel, st.session_state["quote_task_rows"])
                 st.success("Quote workbook generated successfully.")
 
                 with open(output_path, "rb") as f:
