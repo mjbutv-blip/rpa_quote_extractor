@@ -12,6 +12,7 @@ except ImportError:
 from extractor_engine import (
     call_openai_to_extract,
     extract_fabric_quality_from_pdf,
+    extract_images_from_excel,
     extract_size_range_from_pdf,
     extract_text_from_excel,
     extract_text_from_pdf,
@@ -265,18 +266,23 @@ if st.button("开始批量提取并生成报价单"):
                 tmp_file_path = tmp.name
 
             try:
+                images = None
                 if is_pdf:
                     text = extract_text_from_pdf(tmp_file_path)
                 else:
                     text = extract_text_from_excel(tmp_file_path)
+                    images = extract_images_from_excel(tmp_file_path)
 
-                data = call_openai_to_extract(text, api_key)
+                data = call_openai_to_extract(text, api_key, images=images)
                 order_id = _order_id_from_filename(uploaded_file.name)
                 if order_id:
                     data["order_id"] = order_id
                 product_name = normalize_product_name_for_quote(text, data.get("product_name", ""))
                 if product_name:
                     data["product_name"] = product_name
+                color_print = _extract_color_print_from_text(text, data.get("fabric_quality", ""))
+                if color_print:
+                    data["color_print"] = color_print
                 if is_pdf:
                     try:
                         fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
@@ -287,9 +293,6 @@ if st.button("开始批量提取并生成报价单"):
                             )
                     except Exception:
                         pass
-                    color_print = _extract_color_print_from_text(text, data.get("fabric_quality", ""))
-                    if color_print:
-                        data["color_print"] = color_print
                     try:
                         size_range = extract_size_range_from_pdf(tmp_file_path)
                         if size_range:
