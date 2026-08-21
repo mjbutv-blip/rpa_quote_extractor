@@ -271,13 +271,13 @@ if st.button("开始批量提取并生成报价单"):
                     text = extract_text_from_excel(tmp_file_path)
 
                 data = call_openai_to_extract(text, api_key)
+                order_id = _order_id_from_filename(uploaded_file.name)
+                if order_id:
+                    data["order_id"] = order_id
+                product_name = normalize_product_name_for_quote(text, data.get("product_name", ""))
+                if product_name:
+                    data["product_name"] = product_name
                 if is_pdf:
-                    order_id = _order_id_from_filename(uploaded_file.name)
-                    if order_id:
-                        data["order_id"] = order_id
-                    product_name = normalize_product_name_for_quote(text, data.get("product_name", ""))
-                    if product_name:
-                        data["product_name"] = product_name
                     try:
                         fabric_quality = extract_fabric_quality_from_pdf(tmp_file_path)
                         if fabric_quality:
