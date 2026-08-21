@@ -22,6 +22,7 @@ from extractor_engine import (
 from customer_templates import available_template_options
 from el_quote_rules import apply_el_quote_rules
 from excel_writer import write_to_template
+from re_quote_rules import apply_re_quote_rules
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
 
@@ -36,12 +37,13 @@ api_key = st.sidebar.text_input(
 
 customer_id = st.selectbox(
     "选择客户",
-    ["default", "NKD", "EL", "TK"],
+    ["default", "NKD", "EL", "TK", "RE"],
     format_func=lambda value: {
         "default": "默认客户",
         "NKD": "NKD",
         "EL": "EL",
         "TK": "TK",
+        "RE": "RE",
     }.get(value, value),
 )
 template_options = available_template_options(customer_id)
@@ -307,6 +309,8 @@ if st.button("开始批量提取并生成报价单"):
                         pass
                 if customer_id == "EL":
                     data = apply_el_quote_rules(text, data)
+                elif customer_id == "RE":
+                    data = apply_re_quote_rules(text, data, uploaded_file.name)
                 data["_source_filename"] = uploaded_file.name
                 extracted_results.append(data)
                 file_type_label = "PDF" if is_pdf else "Excel"

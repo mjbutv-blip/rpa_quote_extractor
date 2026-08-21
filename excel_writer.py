@@ -58,6 +58,7 @@ def write_to_template(
         ws.cell(row=start_row, column=11, value=_to_plain_text(data.get("color_print", "")))
         ws.cell(row=start_row, column=13, value=_to_plain_text(data.get("sample_quantity", "")) or sample_quantity_default)
         ws.cell(row=start_row, column=14, value=_to_plain_text(data.get("size_range", "")))
+        ws.cell(row=start_row, column=15, value=_to_plain_text(data.get("workmanship_image", "")))
         if _needs_bra_mold_note(data.get("product_name", "")):
             ws.cell(row=start_row, column=17, value=BRA_MOLD_NOTE)
 

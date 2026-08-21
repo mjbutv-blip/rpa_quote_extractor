@@ -18,5 +18,10 @@
     "customer_name": "TK",
     "template_path": "templates/报价单总表模板.xlsx",
     "sample_quantity_mode": "blank"
+  },
+  "RE": {
+    "customer_name": "RE",
+    "template_path": "templates/报价单总表模板.xlsx",
+    "sample_quantity_mode": "blank"
   }
 }
