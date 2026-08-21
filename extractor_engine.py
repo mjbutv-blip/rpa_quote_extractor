@@ -449,7 +449,19 @@ def normalize_product_name_for_quote(text: str, raw_product_name: str = "") -> s
         "下胸围",
         "肩带",
         "领口开口",
-    )) or any(keyword in compact for keyword in ("cup", "bust", "underbust", "schale", "schalen"))
+    )) or any(keyword in compact for keyword in (
+        "cup",
+        "bust",
+        "underbust",
+        "chest",
+        "underchest",
+        "neckopening",
+        "armhole",
+        "shoulderstrap",
+        "frontdrop",
+        "schale",
+        "schalen",
+    ))
     has_bottom_measure = any(keyword in source for keyword in (
         "裆",
         "前浪",
