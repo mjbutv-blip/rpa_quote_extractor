@@ -31,7 +31,7 @@ def _needs_bra_mold_note(product_name: str) -> bool:
     return any(keyword in product_name for keyword in ("文胸", "塞杯无缝内衣", "固定杯背心"))
 
 
-def write_to_template(data_list, template_path, output_path):
+def write_to_template(data_list, template_path, output_path, sample_quantity_default: str = SAMPLE_QUANTITY_NOTE):
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"找不到模板文件: {template_path}")
 
@@ -48,7 +48,7 @@ def write_to_template(data_list, template_path, output_path):
         ws.cell(row=start_row, column=6,  value=_to_plain_text(data.get("product_name", "")))
         ws.cell(row=start_row, column=10, value=_to_plain_text(data.get("fabric_quality", "")))
         ws.cell(row=start_row, column=11, value=_to_plain_text(data.get("color_print", "")))
-        ws.cell(row=start_row, column=13, value=SAMPLE_QUANTITY_NOTE)
+        ws.cell(row=start_row, column=13, value=_to_plain_text(data.get("sample_quantity", "")) or sample_quantity_default)
         ws.cell(row=start_row, column=14, value=_to_plain_text(data.get("size_range", "")))
         if _needs_bra_mold_note(data.get("product_name", "")):
             ws.cell(row=start_row, column=17, value=BRA_MOLD_NOTE)

@@ -17,6 +17,7 @@ from extractor_engine import (
     normalize_product_name_for_quote,
     postprocess_fabric_quality_for_quote,
 )
+from customer_templates import available_template_options
 from excel_writer import write_to_template
 
 st.set_page_config(page_title="RPA 工艺单报价提取器", layout="wide")
@@ -29,6 +30,26 @@ api_key = st.sidebar.text_input(
     type="password",
     value=os.environ.get("OPENAI_API_KEY", ""),
 )
+
+customer_id = st.selectbox(
+    "选择客户",
+    ["default", "NKD", "EL"],
+    format_func=lambda value: {
+        "default": "默认客户",
+        "NKD": "NKD",
+        "EL": "EL",
+    }.get(value, value),
+)
+template_options = available_template_options(customer_id)
+selected_template_index = st.selectbox(
+    "选择报价单模板",
+    list(range(len(template_options))),
+    format_func=lambda idx: f"{template_options[idx]['customer_name']} / {template_options[idx]['template_path']}",
+)
+selected_customer_template = template_options[selected_template_index]
+template_path = selected_customer_template["template_path"]
+sample_quantity_default = selected_customer_template.get("sample_quantity_default", "")
+st.caption(f"样品数量默认值：{'NKD 默认话术' if sample_quantity_default else '留空'}")
 
 uploaded_files = st.file_uploader(
     "选择工艺单文件 (可多选，支持 PDF / Excel)",
@@ -54,9 +75,6 @@ if sort_mode == "手动指定顺序":
         placeholder="2114315\n2114322\n2114330",
         height=100,
     )
-template_path = "templates/报价单总表模板.xlsx"
-
-
 def _natural_sort_key(filename: str):
     parts = re.split(r"(\d+)", filename.lower())
     return [int(part) if part.isdigit() else part for part in parts]
@@ -264,7 +282,12 @@ if st.button("开始批量提取并生成报价单"):
             extracted_results.sort(key=lambda data: _result_sort_key(data, sort_mode, custom_order, drag_order))
             output_path = "templates/生成的报价总表_output.xlsx"
             try:
-                write_to_template(extracted_results, template_path, output_path)
+                write_to_template(
+                    extracted_results,
+                    template_path,
+                    output_path,
+                    sample_quantity_default=sample_quantity_default,
+                )
                 st.success("Quote workbook generated successfully.")
 
                 with open(output_path, "rb") as f:

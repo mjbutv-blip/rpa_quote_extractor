@@ -1,0 +1,17 @@
+{
+  "default": {
+    "customer_name": "默认模板",
+    "template_path": "templates/报价单总表模板.xlsx",
+    "sample_quantity_mode": "blank"
+  },
+  "NKD": {
+    "customer_name": "NKD",
+    "template_path": "templates/报价单总表模板.xlsx",
+    "sample_quantity_mode": "nkd_default"
+  },
+  "EL": {
+    "customer_name": "EL",
+    "template_path": "templates/报价单总表模板.xlsx",
+    "sample_quantity_mode": "blank"
+  }
+}
